@@ -1,0 +1,12 @@
+[project] # 项目基本信息
+name = "reproaudit"
+version = "0.1.0"
+description = "Scientific reproducibility audit agent"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options] # pytest配置
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff] # Ruff配置
+line-length = 100
