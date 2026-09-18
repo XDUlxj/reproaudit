@@ -1,12 +1,36 @@
-[project] # 项目基本信息
-name = "reproaudit"
-version = "0.1.0"
-description = "Scientific reproducibility audit agent"
-requires-python = ">=3.13"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.pytest.ini_options] # pytest配置
-pythonpath = ["src"]
-testpaths = ["tests"]
+[project]
+name = "scitrace"
+version = "0.1.1"
+description = "科研主张证据追踪与可审计复现实验 Agent"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "langgraph>=1.0,<2", "langchain>=1.0,<2", "langchain-openai>=1.0,<2",
+  "langgraph-checkpoint-postgres>=3.0,<4", "psycopg[binary,pool]>=3.2,<4",
+  "pydantic-settings>=2.7,<3", "typer>=0.16,<1", "rich>=13,<15",
+  "httpx>=0.28,<1", "qdrant-client>=1.14,<2", "sentence-transformers>=3.4,<6",
+  "pypdf>=5,<7", "pdfplumber>=0.11,<1", "rank-bm25>=0.2.2,<1",
+  "beautifulsoup4>=4.12,<5", "defusedxml>=0.7,<1"
+]
 
-[tool.ruff] # Ruff配置
+[project.scripts]
+scitrace = "scitrace.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "ruff>=0.11,<1"]
+
+[tool.ruff]
 line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires explicitly configured real services"]

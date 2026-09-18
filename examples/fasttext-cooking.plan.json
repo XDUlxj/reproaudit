@@ -1,0 +1,90 @@
+{
+  "id": "909f4255-a8c3-48e8-927c-7439af3b4d75",
+  "schema_version": 1,
+  "created_at": "2026-09-14T11:04:55.155417+00:00",
+  "version": 1,
+  "claim_id": "fasttext-official-cooking-tutorial",
+  "mode": "code_assisted",
+  "repository_id": null,
+  "repository_revision": "v0.9.2 (archive SHA256 pinned)",
+  "image": "scitrace-runner:0.1",
+  "resources": [
+    {
+      "url": "https://codeload.github.com/facebookresearch/fastText/tar.gz/refs/tags/v0.9.2",
+      "sha256": "7ea4edcdb64bfc6faaaec193ef181bdc108ee62bb6a04e48b2e80b639a99e27e",
+      "destination": "source",
+      "archive": "tar",
+      "resource_id": null
+    },
+    {
+      "url": "https://dl.fbaipublicfiles.com/fasttext/data/cooking.stackexchange.tar.gz",
+      "sha256": "49f2fc08801e2915c813f7d9f1f4f526a4a296efd54531c05d98459e5a331ca6",
+      "destination": "data",
+      "archive": "tar",
+      "resource_id": null
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "make",
+        "-j2"
+      ],
+      "cwd": "source/fastText-0.9.2",
+      "timeout_seconds": 600
+    },
+    {
+      "argv": [
+        "python",
+        "-c",
+        "from pathlib import Path; p=Path('data/cooking.stackexchange.txt'); rows=p.read_bytes().splitlines(keepends=True); assert len(rows)==15404, 'unexpected dataset size'; Path('cooking.train').write_bytes(b''.join(rows[:12404])); Path('cooking.valid').write_bytes(b''.join(rows[12404:])); print('train=12404 valid=3000')"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 600
+    },
+    {
+      "argv": [
+        "./source/fastText-0.9.2/fasttext",
+        "supervised",
+        "-input",
+        "cooking.train",
+        "-output",
+        "model_cooking",
+        "-thread",
+        "2"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 600
+    },
+    {
+      "argv": [
+        "./source/fastText-0.9.2/fasttext",
+        "test",
+        "model_cooking.bin",
+        "cooking.valid"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 600
+    }
+  ],
+  "metric_rules": [],
+  "metric_parser": "fasttext",
+  "metric_file": "metrics.json",
+  "assumptions": [
+    "只验证官方 Cooking 教程执行闭环，不验证论文 benchmark。",
+    "沿用官方教程默认训练参数，线程数固定为 2 以满足 CPU 预算；记录为执行条件差异。",
+    "教程示例数值不作为论文比较阈值；不预设运行结果。",
+    "使用本地构建的 Linux C++ 工具链镜像，镜像 ID 在运行前另行确认。"
+  ],
+  "changes": [
+    "线程数固定为 2；不得将本实验描述为论文严格复现。"
+  ],
+  "blockers": [],
+  "cpus": 2.0,
+  "memory_mib": 4096,
+  "disk_mib": 1024,
+  "timeout_seconds": 600,
+  "download_limit_mib": 500,
+  "provenance": "assisted",
+  "target_scope": "tutorial"
+}

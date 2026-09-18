@@ -1,0 +1,11 @@
+FROM python:3.12-slim-bookworm
+# 仅构建阶段联网安装工具链；实验容器默认断网。
+# 使用 HTTPS 源并设置有限重试/超时，降低本机代理 HTTP 502 的影响。
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --create-home researcher
+USER 1000:1000
+WORKDIR /work
+CMD ["/bin/sleep", "infinity"]

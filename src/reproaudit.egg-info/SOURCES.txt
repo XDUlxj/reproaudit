@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/reproaudit/__init__.py
-src/reproaudit.egg-info/PKG-INFO
-src/reproaudit.egg-info/SOURCES.txt
-src/reproaudit.egg-info/dependency_links.txt
-src/reproaudit.egg-info/top_level.txt
-src/reproaudit/models/claims.py
-tests/test_schemas.py

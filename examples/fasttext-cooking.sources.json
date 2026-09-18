@@ -1,0 +1,16 @@
+{
+  "paper": "https://arxiv.org/abs/1607.01759",
+  "tutorial": "https://fasttext.cc/docs/en/supervised-tutorial.html",
+  "code": {
+    "url": "https://codeload.github.com/facebookresearch/fastText/tar.gz/refs/tags/v0.9.2",
+    "sha256": "7ea4edcdb64bfc6faaaec193ef181bdc108ee62bb6a04e48b2e80b639a99e27e",
+    "bytes": 4036722
+  },
+  "dataset": {
+    "url": "https://dl.fbaipublicfiles.com/fasttext/data/cooking.stackexchange.tar.gz",
+    "sha256": "49f2fc08801e2915c813f7d9f1f4f526a4a296efd54531c05d98459e5a331ca6",
+    "bytes": 457609
+  },
+  "execution_status": "not_run",
+  "verification": "not_tested"
+}
