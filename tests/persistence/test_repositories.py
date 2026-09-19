@@ -21,6 +21,7 @@ from scitrace.persistence import (
     TaskRepository,
 )
 from scitrace.persistence.database import DatabaseRuntime
+from scitrace.persistence.tables import TaskRow
 
 
 def test_persists_task_and_replay_is_idempotent(database: DatabaseRuntime) -> None:
@@ -45,11 +46,13 @@ def test_rejects_same_id_with_different_content(database: DatabaseRuntime) -> No
 def test_updates_task_lifecycle(database: DatabaseRuntime) -> None:
     repository = TaskRepository(database.session_factory)
     created = repository.create(Task(query="复现论文 X"))
-    running = created.model_copy(update={"status": "running"})
+    running = created.model_copy(update={"status": "running", "answer": "处理中"})
 
     repository.update(running)
 
     assert repository.require(created.id).status == "running"
+    with database.session_factory() as session:
+        assert session.get(TaskRow, created.id).answer == "处理中"
 
 
 def test_terminal_task_cannot_return_to_running(database: DatabaseRuntime) -> None:

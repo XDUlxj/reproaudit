@@ -79,7 +79,12 @@ class TaskRepository(_CreateOnlyRepository[Task, TaskRow]):
     adapter = TypeAdapter(Task)
 
     def create(self, entity: Task) -> Task:
-        return super().create(entity, status=entity.status, query=entity.query)
+        return super().create(
+            entity,
+            status=entity.status,
+            query=entity.query,
+            answer=entity.answer,
+        )
 
     def update(self, task: Task) -> Task:
         """更新 Task 当前状态，稳定 ID 和创建时间不可变化。"""
@@ -104,6 +109,7 @@ class TaskRepository(_CreateOnlyRepository[Task, TaskRow]):
                 )
             row.status = task.status
             row.query = task.query
+            row.answer = task.answer
             row.payload = _payload(task)
         return task
 

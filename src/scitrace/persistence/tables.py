@@ -4,11 +4,16 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     """SciTrace 业务表的声明式基类。"""
+
+
+# PostgreSQL 使用可索引、可操作的 JSONB；SQLite 降级时使用原生 JSON 兼容类型。
+ENTITY_PAYLOAD_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
 class RecordColumns:
@@ -17,7 +22,7 @@ class RecordColumns:
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(ENTITY_PAYLOAD_TYPE, nullable=False)
 
 
 class TaskRow(RecordColumns, Base):
@@ -25,6 +30,7 @@ class TaskRow(RecordColumns, Base):
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     query: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ResourceRow(RecordColumns, Base):
