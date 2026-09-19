@@ -22,6 +22,40 @@ initialize_schema(database)
 降级只在应用启动探活 PostgreSQL 失败时发生。运行期间事务失败不会自动切换数据库，
 以免 PostgreSQL 与 SQLite 同时成为事实源。
 
+## Retrieval + Ingestion
+
+第一版支持已 materialize 到本地的论文 PDF 和代码仓库：
+
+```python
+from qdrant_client import QdrantClient
+
+from scitrace.retrieval import (
+    DeterministicChunker,
+    FastEmbedHybridEncoder,
+    IngestionService,
+    LocalResourceResolver,
+    QdrantHybridIndex,
+    ResourceParser,
+)
+
+index = QdrantHybridIndex(
+    QdrantClient(url="http://127.0.0.1:6333"),
+    FastEmbedHybridEncoder(),
+)
+ingestion = IngestionService(
+    LocalResourceResolver(),
+    ResourceParser(),
+    DeterministicChunker(),
+    index,
+)
+
+ingestion.ensure_indexed(resource)
+hits = index.retrieve("Table 3 experiment setup", [resource.id])
+```
+
+`retrieve` 强制要求 `resource_ids`，并在 Qdrant 内使用 Dense + BM25 双路召回与
+RRF 融合。返回结果不暴露融合分数，只通过列表顺序表达排名。
+
 ## 本地校验
 
 ```bash
