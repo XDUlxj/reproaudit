@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain.messages import HumanMessage, ToolMessage
+from langchain.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -32,18 +32,23 @@ def _merge_resources(
 
 @tool("discovery_agent")
 def discovery_agent_tool(
-    request: str,
+    request: str,  # supervisor 的委派请求
     runtime: ToolRuntime[SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """委派 Discovery specialist，发现并验证科研资源。"""
+    """Delegate scientific resource discovery to the Discovery specialist.
+
+    Use this specialist to discover and verify external scientific resources,
+    including papers, repositories, datasets, and models. This specialist does
+    not design experiments, execute commands, or determine whether a
+    reproduction attempt succeeded.
+    """
     parent = runtime.state
-    result = run_discovery_stub(parent["task_id"])
-    next_required = "analysis" if parent.get("required_specialist") == "discovery" else None
+    result = run_discovery_stub(task_id=parent["task_id"], request=request)
     return Command(
         update={
             "resources": _merge_resources(parent["resources"], result.discovered_resources),
-            "required_specialist": next_required,
+            "required_specialist": None,
             "messages": [
                 ToolMessage(
                     tool_call_id=tool_call_id,
@@ -66,9 +71,20 @@ def analysis_agent_tool(
     runtime: ToolRuntime[SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """委派 Analysis specialist，提出方案或验证实验结果。"""
+    """Delegate scientific reasoning to the Analysis specialist.
+
+    Use this specialist to analyze confirmed scientific resources, identify
+    missing requirements, construct or revise an experiment specification,
+    interpret experiment outputs, and evaluate whether experimental evidence
+    satisfies the reproduction goal. This specialist does not execute
+    experiment commands or discover external resources directly.
+    """
     parent = runtime.state
-    result = run_analysis_stub(parent["resources"], parent.get("experiment_run"))
+    result = run_analysis_stub(
+        resources=parent["resources"],
+        experiment_run=parent.get("experiment_run"),
+        request=request,
+    )
     updates: dict[str, Any] = {"required_specialist": None}
 
     if isinstance(result, ProposeSpec):
@@ -80,7 +96,6 @@ def analysis_agent_tool(
             verification_criteria=draft.verification_criteria,
             parent_spec_id=parent["experiment_spec"].id if parent.get("experiment_spec") else None,
         )
-        updates["required_specialist"] = "execution"
     elif isinstance(result, GoalSatisfied):
         updates["final_answer"] = result.summary
 
@@ -102,7 +117,13 @@ def execution_agent_tool(
     runtime: ToolRuntime[SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """委派 Execution specialist，执行已正式采用的 ExperimentSpec。"""
+    """Delegate experiment execution to the Execution specialist.
+
+    Use this specialist to execute an existing accepted ExperimentSpec and
+    report actual runtime results, outputs, and failures. This specialist does
+    not define the scientific goal or determine whether the scientific
+    reproduction goal has been satisfied.
+    """
     parent = runtime.state
     spec = parent.get("experiment_spec")
     if spec is None:
@@ -113,7 +134,7 @@ def execution_agent_tool(
     if missing_resource_ids:
         missing = ", ".join(sorted(missing_resource_ids))
         raise ValueError(f"ExperimentSpec 引用了未确认的资源：{missing}")
-    run, result = run_execution_stub(spec)
+    run, result = run_execution_stub(experiment_spec=spec, request=request)
     return Command(
         update={
             "experiment_run": run,
@@ -161,18 +182,47 @@ class SpecialistRoutingMiddleware(AgentMiddleware):
         return handler(request.override(tools=tools, tool_choice=expected_name))
 
 
-SCITRACE_SYSTEM_PROMPT = """You are SciTraceAgent, an autonomous scientific reproduction supervisor.
-Use specialist tools based on the current evidence. Discovery finds resources, Analysis proposes or
-verifies a specification, and Execution performs an accepted specification. Do not claim success
-until Analysis confirms the reproduction criterion after an ExperimentRun.
+class StateContextMiddleware(AgentMiddleware):
+    """把 Main State 的当前业务事实呈现给 Supervisor，不给出路由建议。"""
 
-For this walking skeleton, continue working autonomously until the goal is resolved:
-- If no resource discovery result exists, call discovery_agent.
-- After discovery, call analysis_agent to construct the experiment specification.
-- After analysis proposes a specification, call execution_agent.
-- After execution succeeds, call analysis_agent again to verify the result.
-- After analysis reports goal_satisfied, answer the user and stop.
-Never stop merely because a specialist returned an intermediate result.
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        state = request.state
+        snapshot = {
+            "task_id": state.get("task_id"),
+            "resources": [resource.model_dump(mode="json") for resource in state.get("resources", [])],
+            "experiment_spec": (
+                state["experiment_spec"].model_dump(mode="json")
+                if state.get("experiment_spec") is not None
+                else None
+            ),
+            "experiment_run": (
+                state["experiment_run"].model_dump(mode="json")
+                if state.get("experiment_run") is not None
+                else None
+            ),
+            "required_specialist": state.get("required_specialist"),
+            "final_answer": state.get("final_answer"),
+        }
+        base_prompt = str(request.system_message.content) if request.system_message else ""
+        state_prompt = (
+            f"{base_prompt}\n\nCurrent SciTraceState (authoritative facts, not routing advice):\n"
+            f"{json.dumps(snapshot, ensure_ascii=False)}"
+        )
+        return handler(request.override(system_message=SystemMessage(content=state_prompt)))
+
+
+SCITRACE_SYSTEM_PROMPT = """You are SciTraceAgent, the supervisor of a scientific reproduction system.
+Your goal is to resolve the user's scientific reproduction request by coordinating the available
+specialist agents. Use the available specialists according to the current task state and accumulated
+evidence. A specialist may be called multiple times when necessary.
+Do not invent scientific resources, experiment results, or missing evidence.
+A successful program execution alone is not sufficient evidence that a scientific result has been
+reproduced. When the user's scientific goal has been resolved with sufficient evidence, provide the
+final answer and stop.
 """
 
 
@@ -198,7 +248,7 @@ def build_walking_skeleton_agent(
     return create_agent(
         model=model or WalkingSkeletonSupervisorModel(),
         tools=list(SPECIALIST_TOOLS),
-        middleware=[SpecialistRoutingMiddleware()],
+        middleware=[StateContextMiddleware(), SpecialistRoutingMiddleware()],
         state_schema=SciTraceState,
         checkpointer=checkpointer or _walking_skeleton_checkpointer(),
         system_prompt=SCITRACE_SYSTEM_PROMPT,

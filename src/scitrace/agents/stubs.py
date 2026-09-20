@@ -23,8 +23,9 @@ from scitrace.models.agent_results import (
 )
 
 
-def run_discovery_stub(task_id: str) -> DiscoveryResult:
+def run_discovery_stub(*, task_id: str, request: str) -> DiscoveryResult:
     """返回一个固定但结构合法的论文资源。"""
+    _ = request
     resource = PaperResource(
         id=f"stub-paper-{task_id}",
         name="Stub Paper for Walking Skeleton",
@@ -38,10 +39,13 @@ def run_discovery_stub(task_id: str) -> DiscoveryResult:
 
 
 def run_analysis_stub(
+    *,
     resources: list[ResearchResource],
     experiment_run: ExperimentRun | None,
+    request: str,
 ) -> AnalysisResult:
     """第一次提出 Spec；Run 成功后给出科学目标已满足。"""
+    _ = request
     if experiment_run is not None and experiment_run.status == "succeeded":
         return GoalSatisfied(summary="Stub verifier confirms the reproduction criterion is satisfied.")
 
@@ -64,12 +68,15 @@ def run_analysis_stub(
     )
     return ProposeSpec(
         proposal=proposal,
-        summary="A formal experiment specification can be materialized from the stub proposal.",
+        summary="An experiment specification was proposed.",
     )
 
 
-def run_execution_stub(experiment_spec: ExperimentSpec) -> tuple[ExperimentRun, ExecutionSucceeded]:
+def run_execution_stub(
+    *, experiment_spec: ExperimentSpec, request: str
+) -> tuple[ExperimentRun, ExecutionSucceeded]:
     """不启动进程，仅构造一次结构合法的成功运行。"""
+    _ = request
     run = ExperimentRun(
         experiment_spec_id=experiment_spec.id,
         status="succeeded",
