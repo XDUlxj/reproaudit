@@ -55,10 +55,13 @@ class ResourceParser:
             if file_path.suffix.lower() not in SUPPORTED_TEXT_SUFFIXES:
                 continue
             try:
-                content = file_path.read_text(encoding="utf-8").strip()
+                # 不能 strip：前导/尾随空行也是原文件行号的一部分，删除后会让
+                # FileLocator 与真实文件位置错位。newline="" 还会保留原始换行符。
+                with file_path.open("r", encoding="utf-8", newline="") as source:
+                    content = source.read()
             except UnicodeDecodeError:
                 continue
-            if content:
+            if content.strip():
                 relative_path = file_path.relative_to(root).as_posix()
                 line_count = len(content.splitlines())
                 units.append(

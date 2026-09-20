@@ -26,3 +26,21 @@ def test_long_file_unit_preserves_line_ranges() -> None:
 
     assert [chunk.locator.start_line for chunk in chunks] == [10, 11, 12]
     assert [chunk.locator.end_line for chunk in chunks] == [10, 11, 12]
+
+
+def test_chunk_content_keeps_blank_lines_in_locator_range() -> None:
+    unit = ParsedUnit(
+        "\nalpha beta\n\ngamma delta\n",
+        FileLocator(path="train.py", start_line=1, end_line=4),
+    )
+
+    chunks = DeterministicChunker(max_chunk_tokens=2, overlap_lines=0).chunk(
+        "resource-1", [unit]
+    )
+
+    assert chunks[0].content == "\nalpha beta\n\n"
+    assert chunks[0].locator.start_line == 1
+    assert chunks[0].locator.end_line == 3
+    assert chunks[1].content == "gamma delta\n"
+    assert chunks[1].locator.start_line == 4
+    assert chunks[1].locator.end_line == 4

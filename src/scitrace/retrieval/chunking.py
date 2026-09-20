@@ -24,7 +24,9 @@ class DeterministicChunker:
         return chunks
 
     def _chunk_unit(self, resource_id: str, unit: ParsedUnit) -> list[ResourceChunk]:
-        lines = unit.content.splitlines()
+        # keepends=True 使 chunk.content 成为原文的真实连续切片，不重写 CRLF，
+        # 也不丢失末尾换行符。
+        lines = unit.content.splitlines(keepends=True)
         if self._token_count(unit.content) <= self.max_chunk_tokens:
             return [ResourceChunk(resource_id=resource_id, content=unit.content, locator=unit.locator)]
 
@@ -41,8 +43,9 @@ class DeterministicChunker:
                 end += 1
             if end == start:
                 end += 1
-            content = "\n".join(lines[start:end]).strip()
-            if content:
+            # 保留切片内的空白行，确保 content 与 locator 指向的原文范围一致。
+            content = "".join(lines[start:end])
+            if content.strip():
                 result.append(
                     ResourceChunk(
                         resource_id=resource_id,
