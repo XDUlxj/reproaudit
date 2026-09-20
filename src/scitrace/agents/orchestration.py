@@ -80,6 +80,7 @@ def analysis_agent_tool(
             verification_criteria=draft.verification_criteria,
             parent_spec_id=parent["experiment_spec"].id if parent.get("experiment_spec") else None,
         )
+        updates["required_specialist"] = "execution"
     elif isinstance(result, GoalSatisfied):
         updates["final_answer"] = result.summary
 
@@ -156,13 +157,22 @@ class SpecialistRoutingMiddleware(AgentMiddleware):
         tools = [candidate for candidate in request.tools if candidate.name == expected_name]
         if len(tools) != 1:
             raise RuntimeError(f"找不到 required specialist tool：{expected_name}")
-        return handler(request.override(tools=tools))
+        # 仅过滤工具仍允许模型直接回答；tool_choice 才能落实“下一步必须调用”。
+        return handler(request.override(tools=tools, tool_choice=expected_name))
 
 
 SCITRACE_SYSTEM_PROMPT = """You are SciTraceAgent, an autonomous scientific reproduction supervisor.
 Use specialist tools based on the current evidence. Discovery finds resources, Analysis proposes or
 verifies a specification, and Execution performs an accepted specification. Do not claim success
 until Analysis confirms the reproduction criterion after an ExperimentRun.
+
+For this walking skeleton, continue working autonomously until the goal is resolved:
+- If no resource discovery result exists, call discovery_agent.
+- After discovery, call analysis_agent to construct the experiment specification.
+- After analysis proposes a specification, call execution_agent.
+- After execution succeeds, call analysis_agent again to verify the result.
+- After analysis reports goal_satisfied, answer the user and stop.
+Never stop merely because a specialist returned an intermediate result.
 """
 
 
