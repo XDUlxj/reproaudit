@@ -1,7 +1,6 @@
 """PyMuPDF4LLM Paper parser 与确定性 Repository reader。"""
 
 import mimetypes
-import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +17,6 @@ SUPPORTED_TEXT_SUFFIXES = {
     ".tsx", ".txt", ".yaml", ".yml",
 } # 文件白名单
 IGNORED_DIRECTORY_NAMES = {".git", ".venv", "__pycache__", "node_modules", "dist"}
-IMAGE_PAGE_PATTERN = re.compile(r"-p(\d+)-", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,22 +67,26 @@ class ResourceParser:
             )
             if not isinstance(pages, list):
                 raise RuntimeError("PyMuPDF4LLM page_chunks 未返回分页结果")
-            artifacts_by_page, path_replacements = self._persist_images(
-                resource.resource_id, image_directory
-            )
+            persisted_images = self._persist_images(resource.resource_id, image_directory)
             units: list[ParsedUnit] = []
             for fallback_page, page in enumerate(pages, start=1):
                 metadata = page.get("metadata", {})
                 page_number = int(metadata.get("page_number", fallback_page))
                 content = str(page.get("text", ""))
-                for original, artifact_uri in path_replacements.items():
-                    content = content.replace(f"]({original})", f"]({artifact_uri})")
+                page_artifacts: list[ArtifactReference] = []
+                for image, artifact in persisted_images:
+                    candidates = {str(image), image.as_posix(), image.name}
+                    if not any(f"]({candidate})" in content for candidate in candidates):
+                        continue
+                    for candidate in candidates:
+                        content = content.replace(f"]({candidate})", f"]({artifact.uri})")
+                    page_artifacts.append(artifact)
                 if content.strip():
                     units.append(
                         ParsedUnit(
                             content=content,
                             locator=PaperLocator(start_page=page_number),
-                            artifacts=tuple(artifacts_by_page.get(page_number, [])),
+                            artifacts=tuple(page_artifacts),
                         )
                     )
             return units
@@ -99,26 +101,19 @@ class ResourceParser:
 
     def _persist_images(
         self, resource_id: str, image_directory: Path
-    ) -> tuple[dict[int, list[ArtifactReference]], dict[str, str]]:
-        by_page: dict[int, list[ArtifactReference]] = {}
-        replacements: dict[str, str] = {}
+    ) -> list[tuple[Path, ArtifactReference]]:
+        """持久化 backend 产出的图片，不对第三方文件名格式作任何假设。"""
+        persisted: list[tuple[Path, ArtifactReference]] = []
         assert self.artifact_store is not None
         for image in sorted(path for path in image_directory.iterdir() if path.is_file()):
-            match = IMAGE_PAGE_PATTERN.search(image.name)
-            if match is None:
-                continue
-            page_number = int(match.group(1))
             artifact = self.artifact_store.put_bytes(
                 namespace=f"resources/{resource_id}/figures",
                 name=image.name,
                 content=image.read_bytes(),
                 media_type=mimetypes.guess_type(image.name)[0] or "application/octet-stream",
             )
-            by_page.setdefault(page_number, []).append(artifact)
-            replacements[str(image)] = artifact.uri
-            replacements[image.as_posix()] = artifact.uri
-            replacements[image.name] = artifact.uri
-        return by_page, replacements
+            persisted.append((image, artifact))
+        return persisted
 
     def _parse_repository(self, path: Path) -> list[ParsedUnit]:
         root = path if path.is_dir() else path.parent # 兼容一个小文件以及一整个仓库

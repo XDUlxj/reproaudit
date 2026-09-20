@@ -31,7 +31,9 @@ def test_paper_parser_adapts_page_markdown_and_persists_images(tmp_path) -> None
 
     def fake_to_markdown(_path: str, **options):
         image_path = Path(options["image_path"])
-        image = image_path / "paper.pdf-p1-0.png"
+        # PyMuPDF4LLM 当前格式：{filename}-{pagenumber}-{image_number}.png。
+        # Parser 不应通过解析该名称判断图片属于哪一页。
+        image = image_path / "paper.pdf-0-0.png"
         image.write_bytes(b"png-content")
         return [
             {
@@ -51,3 +53,25 @@ def test_paper_parser_adapts_page_markdown_and_persists_images(tmp_path) -> None
     artifact = units[0].artifacts[0]
     assert artifact.uri in units[0].content
     assert artifact_store.resolve(artifact).read_bytes() == b"png-content"
+
+
+def test_paper_parser_assigns_images_from_page_markdown_not_filename(tmp_path) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"fake-pdf")
+    artifact_store = LocalArtifactStore(tmp_path / "artifacts")
+
+    def fake_to_markdown(_path: str, **options):
+        image_path = Path(options["image_path"])
+        oddly_named = image_path / "backend-name-without-page-marker.png"
+        oddly_named.write_bytes(b"image")
+        return [
+            {"metadata": {"page_number": 7}, "text": f"Figure caption\n![]({oddly_named})"}
+        ]
+
+    units = ResourceParser(artifact_store, paper_to_markdown=fake_to_markdown).parse(
+        ResolvedResource("paper-1", "paper", pdf)
+    )
+
+    assert units[0].locator.start_page == 7
+    assert len(units[0].artifacts) == 1
+    assert units[0].artifacts[0].uri in units[0].content
