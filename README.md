@@ -27,14 +27,17 @@ initialize_schema(database)
 第一版支持已 materialize 到本地的论文 PDF 和代码仓库：
 
 ```python
+from pathlib import Path
+
 from qdrant_client import QdrantClient
 
+from scitrace.persistence import LocalArtifactStore
 from scitrace.retrieval import (
-    DeterministicChunker,
     FastEmbedHybridEncoder,
     IngestionService,
     LocalResourceResolver,
     QdrantHybridIndex,
+    ResourceChunker,
     ResourceParser,
 )
 
@@ -44,8 +47,8 @@ index = QdrantHybridIndex(
 )
 ingestion = IngestionService(
     LocalResourceResolver(),
-    ResourceParser(),
-    DeterministicChunker(),
+    ResourceParser(LocalArtifactStore(Path("artifacts"))),
+    ResourceChunker(),
     index,
 )
 
@@ -55,6 +58,10 @@ hits = index.retrieve("Table 3 experiment setup", [resource.id])
 
 `retrieve` 强制要求 `resource_ids`，并在 Qdrant 内使用 Dense + BM25 双路召回与
 RRF 融合。返回结果不暴露融合分数，只通过列表顺序表达排名。
+
+Paper 使用 PyMuPDF4LLM 生成分页 Markdown（包括可提取的表格文本），检测到的图片进入
+ArtifactStore；Repository 保留文件相对路径和真实行号。只有过长的天然单元才交给
+LangChain splitter，SciTrace 适配层负责把字符位置还原为 locator。
 
 ## 本地校验
 

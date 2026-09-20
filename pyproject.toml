@@ -14,7 +14,8 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "qdrant-client>=1.15,<2",
   "fastembed>=0.7,<1",
-  "pypdf>=6,<7",
+  "pymupdf4llm>=0.2,<1",
+  "langchain-text-splitters>=1.0,<2",
 ]
 
 [dependency-groups]

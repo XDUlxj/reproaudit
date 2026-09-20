@@ -1,6 +1,6 @@
 """确定性的资源摄取与混合检索基础设施。"""
 
-from scitrace.retrieval.chunking import DeterministicChunker
+from scitrace.retrieval.chunking import DeterministicChunker, ResourceChunker
 from scitrace.retrieval.embedding import FastEmbedHybridEncoder, HybridEncoder, SparseEmbedding
 from scitrace.retrieval.ingestion import IngestionResult, IngestionService
 from scitrace.retrieval.parsing import ResourceParser
@@ -17,5 +17,6 @@ __all__ = [
     "QdrantHybridIndex",
     "ResolvedResource",
     "ResourceParser",
+    "ResourceChunker",
     "SparseEmbedding",
 ]

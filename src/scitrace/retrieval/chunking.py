@@ -1,21 +1,29 @@
-"""保留原文行/页定位的确定性分块。"""
+"""LangChain splitter 与 SciTrace provenance 之间的薄适配层。"""
 
-import re
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from scitrace.models import FileLocator, PaperLocator, ResourceChunk
+from scitrace.models import ArtifactReference, FileLocator, PaperLocator, ResourceChunk
 from scitrace.retrieval.parsing import ParsedUnit
 
-TOKEN_PATTERN = re.compile(r"[\w]+|[^\w\s]", re.UNICODE)
 
+class ResourceChunker:
+    """只对过长天然单元切分，并把字符位置适配回 ContentLocator。"""
 
-class DeterministicChunker:
-    """天然单元过长时才按行切分，并保留少量行重叠。"""
-
-    def __init__(self, *, max_chunk_tokens: int = 400, overlap_lines: int = 2) -> None:
-        if max_chunk_tokens < 1 or overlap_lines < 0:
-            raise ValueError("分块参数必须为正数，overlap_lines 可为 0")
-        self.max_chunk_tokens = max_chunk_tokens
-        self.overlap_lines = overlap_lines
+    def __init__(self, *, chunk_size: int = 1600, chunk_overlap: int | None = None) -> None:
+        if chunk_overlap is None:
+            chunk_overlap = min(160, chunk_size // 10)
+        if chunk_size < 1 or chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            raise ValueError("chunk_size 必须为正，chunk_overlap 必须满足 0 <= overlap < size")
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self._splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            add_start_index=True,
+            keep_separator=True,
+            strip_whitespace=False,
+            separators=["\n# ", "\n## ", "\n### ", "\n\n", "\n", " ", ""],
+        )
 
     def chunk(self, resource_id: str, units: list[ParsedUnit]) -> list[ResourceChunk]:
         chunks: list[ResourceChunk] = []
@@ -24,53 +32,55 @@ class DeterministicChunker:
         return chunks
 
     def _chunk_unit(self, resource_id: str, unit: ParsedUnit) -> list[ResourceChunk]:
-        # keepends=True 使 chunk.content 成为原文的真实连续切片，不重写 CRLF，
-        # 也不丢失末尾换行符。
-        lines = unit.content.splitlines(keepends=True)
-        if self._token_count(unit.content) <= self.max_chunk_tokens:
-            return [ResourceChunk(resource_id=resource_id, content=unit.content, locator=unit.locator)]
-
-        result: list[ResourceChunk] = []
-        start = 0
-        while start < len(lines):
-            end = start
-            token_count = 0
-            while end < len(lines):
-                next_count = self._token_count(lines[end])
-                if end > start and token_count + next_count > self.max_chunk_tokens:
-                    break
-                token_count += next_count
-                end += 1
-            if end == start:
-                end += 1
-            # 保留切片内的空白行，确保 content 与 locator 指向的原文范围一致。
-            content = "".join(lines[start:end])
-            if content.strip():
-                result.append(
-                    ResourceChunk(
-                        resource_id=resource_id,
-                        content=content,
-                        locator=self._slice_locator(unit, start, end),
-                    )
+        if len(unit.content) <= self.chunk_size:
+            return [
+                ResourceChunk(
+                    resource_id=resource_id,
+                    content=unit.content,
+                    locator=unit.locator,
+                    artifacts=list(unit.artifacts),
                 )
-            if end >= len(lines):
-                break
-            start = max(start + 1, end - self.overlap_lines)
-        return result
+            ]
 
-    @staticmethod
-    def _token_count(text: str) -> int:
-        return len(TOKEN_PATTERN.findall(text))
+        documents = self._splitter.create_documents([unit.content])
+        chunks: list[ResourceChunk] = []
+        for document in documents:
+            if not document.page_content.strip():
+                continue
+            start = int(document.metadata["start_index"])
+            end = start + len(document.page_content)
+            chunks.append(
+                ResourceChunk(
+                    resource_id=resource_id,
+                    content=document.page_content,
+                    locator=self._slice_locator(unit, start, end),
+                    artifacts=self._referenced_artifacts(document.page_content, unit.artifacts),
+                )
+            )
+        return chunks
 
     @staticmethod
     def _slice_locator(unit: ParsedUnit, start: int, end: int):
         if isinstance(unit.locator, FileLocator):
-            base = unit.locator.start_line or 1
+            base_line = unit.locator.start_line or 1
+            start_line = base_line + unit.content.count("\n", 0, start)
+            last_character = max(start, end - 1)
+            end_line = base_line + unit.content.count("\n", 0, last_character)
             return FileLocator(
                 path=unit.locator.path,
-                start_line=base + start,
-                end_line=base + end - 1,
+                start_line=start_line,
+                end_line=end_line,
             )
         locator = unit.locator
         assert isinstance(locator, PaperLocator)
         return locator
+
+    @staticmethod
+    def _referenced_artifacts(
+        content: str, artifacts: tuple[ArtifactReference, ...]
+    ) -> list[ArtifactReference]:
+        return [artifact for artifact in artifacts if artifact.uri in content]
+
+
+# 保留旧名称一个版本，避免现有 application wiring 立即失效。
+DeterministicChunker = ResourceChunker

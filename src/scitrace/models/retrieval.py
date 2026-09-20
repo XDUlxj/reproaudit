@@ -26,12 +26,22 @@ class FileLocator(BaseModel):
 ContentLocator = Annotated[PaperLocator | FileLocator, Field(discriminator="kind")]
 
 
+class ArtifactReference(BaseModel):
+    """ResourceChunk 关联的非 Entity Artifact 元数据。"""
+
+    name: str = Field(min_length=1)
+    uri: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    media_type: str = Field(min_length=1)
+
+
 class ResourceChunk(BaseModel):
     """由 ResearchResource 派生的可检索文本块，不是领域 Entity。"""
 
     resource_id: str = Field(min_length=1)
-    content: str = Field(min_length=1)
-    locator: ContentLocator
+    content: str = Field(min_length=1) # 原始资源内容
+    locator: ContentLocator # locator 负责说明这段 content 来自哪里
+    artifacts: list[ArtifactReference] = Field(default_factory=list)
 
 
 class RetrievalHit(BaseModel):
@@ -40,3 +50,4 @@ class RetrievalHit(BaseModel):
     resource_id: str
     locator: ContentLocator
     content: str
+    artifacts: list[ArtifactReference] = Field(default_factory=list)

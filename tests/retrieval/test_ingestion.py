@@ -27,7 +27,7 @@ def build_pipeline() -> tuple[IngestionService, QdrantHybridIndex]:
     service = IngestionService(
         LocalResourceResolver(),
         ResourceParser(),
-        DeterministicChunker(max_chunk_tokens=30, overlap_lines=0),
+        DeterministicChunker(chunk_size=120, chunk_overlap=0),
         index,
     )
     return service, index

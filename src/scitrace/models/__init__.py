@@ -27,6 +27,7 @@ from scitrace.models.resource import (
     WebLocation,
 )
 from scitrace.models.retrieval import (
+    ArtifactReference,
     ContentLocator,
     FileLocator,
     PaperLocator,
@@ -36,7 +37,7 @@ from scitrace.models.retrieval import (
 from scitrace.models.task import Task
 
 __all__ = [
-    "ArtifactCriterion", "ArtifactOutput", "AttachmentLocation", "CommandRun",
+    "ArtifactCriterion", "ArtifactOutput", "ArtifactReference", "AttachmentLocation", "CommandRun",
     "DatasetResource", "ExperimentRun", "ExperimentSpec", "LocalExecutionHandle",
     "ContentLocator", "FileLocator", "LocalLocation", "MetricCriterion", "MetricOutput",
     "ModelResource", "ObservedOutput", "PaperLocator", "ResourceChunk", "RetrievalHit",

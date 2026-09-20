@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from scitrace.models import ResearchResource
-from scitrace.retrieval.chunking import DeterministicChunker
+from scitrace.retrieval.chunking import ResourceChunker
 from scitrace.retrieval.parsing import ResourceParser
 from scitrace.retrieval.qdrant_index import QdrantHybridIndex
 from scitrace.retrieval.resolving import LocalResourceResolver
@@ -22,7 +22,7 @@ class IngestionService:
         self,
         resolver: LocalResourceResolver,
         parser: ResourceParser,
-        chunker: DeterministicChunker,
+        chunker: ResourceChunker,
         index: QdrantHybridIndex,
     ) -> None:
         self.resolver = resolver

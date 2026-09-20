@@ -80,6 +80,9 @@ class QdrantHybridIndex:
                         "resource_id": chunk.resource_id,
                         "content": chunk.content,
                         "locator": chunk.locator.model_dump(mode="json"),
+                        "artifacts": [
+                            artifact.model_dump(mode="json") for artifact in chunk.artifacts
+                        ],
                     },
                 )
             )
@@ -130,6 +133,7 @@ class QdrantHybridIndex:
                     resource_id=str(payload["resource_id"]),
                     content=str(payload["content"]),
                     locator=LOCATOR_ADAPTER.validate_python(payload["locator"]),
+                    artifacts=payload.get("artifacts", []),
                 )
             )
         return hits
