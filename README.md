@@ -63,6 +63,26 @@ Paper 使用 PyMuPDF4LLM 生成分页 Markdown（包括可提取的表格文本�
 ArtifactStore；Repository 保留文件相对路径和真实行号。只有过长的天然单元才交给
 LangChain splitter，SciTrace 适配层负责把字符位置还原为 locator。
 
+## Agent Walking Skeleton
+
+当前纵切使用真实 LangChain `create_agent`、LangGraph 状态图、tool calling 和 checkpoint，
+三个 Specialist 的业务实现暂时是确定性 stub：
+
+```python
+from scitrace.agents import build_walking_skeleton_agent, initial_scitrace_state
+
+agent = build_walking_skeleton_agent()
+result = agent.invoke(
+    initial_scitrace_state("task-001", "复现论文的主要实验结果"),
+    config={"configurable": {"thread_id": "task-001"}},
+)
+
+assert result["goal_satisfied"] is True
+```
+
+它会自主完成 `Discovery → Analysis 提案 → Execution → Analysis 验证`。这里验证的是编排
+闭环，不代表已经真实下载论文、执行代码或完成科学复现；后续迭代再逐个替换 Specialist stub。
+
 ## 本地校验
 
 ```bash
