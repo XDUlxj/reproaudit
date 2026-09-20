@@ -6,14 +6,19 @@ from typing import Any
 from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from scitrace.agents import SciTraceContext, build_walking_skeleton_agent, initial_scitrace_state
-from scitrace.agents.orchestration import SPECIALIST_TOOLS, SpecialistRoutingMiddleware
-from scitrace.agents.testing_model import WalkingSkeletonSupervisorModel
+from scitrace.agents import initial_scitrace_state
+from scitrace.agents.orchestration import SpecialistRoutingMiddleware
+from tests.agents.fakes import (
+    SPECIALIST_TOOLS,
+    DeterministicSupervisorModel,
+    StubWorld,
+    build_test_agent,
+)
 
 
 def test_agent_autonomously_completes_stub_reproduction() -> None:
     """真实 Agent loop 应自主形成资源、方案、运行、验证的完整链路。"""
-    agent = build_walking_skeleton_agent()
+    agent = build_test_agent()
     config = {"configurable": {"thread_id": "walking-skeleton-e2e"}}
 
     result = agent.invoke(
@@ -79,7 +84,7 @@ def test_initial_state_contains_only_required_main_state_fields() -> None:
 
 def test_compiled_agent_is_a_real_langgraph() -> None:
     """防止 Walking Skeleton 退化为手写的顺序函数调用。"""
-    agent = build_walking_skeleton_agent()
+    agent = build_test_agent()
 
     graph = agent.get_graph()
 
@@ -89,11 +94,11 @@ def test_compiled_agent_is_a_real_langgraph() -> None:
 
 def test_need_resources_world_returns_to_discovery() -> None:
     """确定性模型用于证明 NeedResources 测试世界和 Command 回写机制正确。"""
-    agent = build_walking_skeleton_agent()
+    agent = build_test_agent()
     result = agent.invoke(
         initial_scitrace_state("task-need-resources", "Reproduce the paper."),
         config={"configurable": {"thread_id": "need-resources-mechanism"}},
-        context=SciTraceContext(stub_scenario="need_resources"),
+        context=StubWorld(scenario="need_resources"),
     )
 
     actions = [
@@ -122,7 +127,7 @@ def test_required_specialist_is_enforced_by_middleware() -> None:
         return ModelResponse(result=[AIMessage(content="")])
 
     request = ModelRequest(
-        model=WalkingSkeletonSupervisorModel(),
+        model=DeterministicSupervisorModel(),
         messages=[],
         tools=list(SPECIALIST_TOOLS),
         state={"required_specialist": "analysis"},

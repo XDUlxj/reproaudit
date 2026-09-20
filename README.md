@@ -65,13 +65,16 @@ LangChain splitter，SciTrace 适配层负责把字符位置还原为 locator。
 
 ## Agent Walking Skeleton
 
-当前纵切使用真实 LangChain `create_agent`、LangGraph 状态图、tool calling 和 checkpoint，
-三个 Specialist 的业务实现暂时是确定性 stub：
+生产包提供真实 LangChain `create_agent`、LangGraph 状态图、tool calling 和 checkpoint
+编排内核。模型与 Specialist tools 由应用 composition root 显式注入：
 
 ```python
-from scitrace.agents import build_walking_skeleton_agent, initial_scitrace_state
+from scitrace.agents import build_scitrace_agent, initial_scitrace_state
 
-agent = build_walking_skeleton_agent()
+agent = build_scitrace_agent(
+    model=chat_model,
+    specialist_tools=[discovery_agent, analysis_agent, execution_agent],
+)
 result = agent.invoke(
     initial_scitrace_state("task-001", "复现论文的主要实验结果"),
     config={"configurable": {"thread_id": "task-001"}},
@@ -80,8 +83,9 @@ result = agent.invoke(
 assert result["final_answer"] is not None
 ```
 
-它会自主完成 `Discovery → Analysis 提案 → Execution → Analysis 验证`。这里验证的是编排
-闭环，不代表已经真实下载论文、执行代码或完成科学复现；后续迭代再逐个替换 Specialist stub。
+Walking Skeleton 的 deterministic Stub、规则模型、Happy Path 和 NeedResources 测试世界
+全部位于 `tests/agents/`，不会进入生产包。真实 GLM routing 集成测试位于
+`tests/integration/test_agent_glm_real.py`。
 
 ## 本地校验
 

@@ -9,11 +9,10 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from scitrace.agents import (
-    SciTraceContext,
     build_glm_model,
-    build_walking_skeleton_agent,
     initial_scitrace_state,
 )
+from tests.agents.fakes import StubWorld, build_test_agent
 
 
 def _require_real_glm() -> None:
@@ -88,7 +87,7 @@ def _inspect_trajectory(messages: list[Any], minimum_calls: dict[str, int]) -> d
 
 
 def _run_real_scenario(*, run_id: str, scenario: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    agent = build_walking_skeleton_agent(model=build_glm_model())
+    agent = build_test_agent(model=build_glm_model())
     query = (
         "Reproduce the primary accuracy result reported by the paper titled "
         "'Stub Paper for Walking Skeleton'. Locate and verify the required scientific "
@@ -98,7 +97,7 @@ def _run_real_scenario(*, run_id: str, scenario: str) -> tuple[dict[str, Any], d
     result = agent.invoke(
         initial_scitrace_state(f"task-{run_id}", query),
         config={"configurable": {"thread_id": run_id}, "recursion_limit": 60},
-        context=SciTraceContext(stub_scenario=scenario),
+        context=StubWorld(scenario=scenario),
     )
     checkpoint = agent.get_state({"configurable": {"thread_id": run_id}})
     return result, checkpoint.values
