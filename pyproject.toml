@@ -29,6 +29,9 @@ packages = ["src/scitrace"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: requires explicitly configured real external services and models",
+]
 
 [tool.ruff]
 line-length = 100
