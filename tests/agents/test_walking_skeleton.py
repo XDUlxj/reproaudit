@@ -36,15 +36,28 @@ def test_agent_autonomously_completes_stub_reproduction() -> None:
     assert result["experiment_run"] is not None
     assert result["experiment_run"].experiment_spec_id == result["experiment_spec"].id
     assert result["experiment_run"].status == "succeeded"
-    assert result["execution_attempts"] == 1
-    assert result["goal_satisfied"] is True
     assert result["final_answer"] is not None
     assert isinstance(result["messages"][-1], AIMessage)
 
     # 同一个 thread_id 的最终状态应已写入真实 LangGraph checkpointer。
     checkpoint = agent.get_state(config)
-    assert checkpoint.values["goal_satisfied"] is True
+    assert checkpoint.values["final_answer"] == result["final_answer"]
     assert checkpoint.values["experiment_run"].id == result["experiment_run"].id
+
+
+def test_initial_state_contains_only_required_main_state_fields() -> None:
+    """初始化结果不应混入预算、结论布尔值或 Specialist 内部过程状态。"""
+    state = initial_scitrace_state("task-state", "Reproduce the paper.")
+
+    assert set(state) == {
+        "messages",
+        "task_id",
+        "resources",
+        "experiment_spec",
+        "experiment_run",
+        "required_specialist",
+        "final_answer",
+    }
 
 
 def test_compiled_agent_is_a_real_langgraph() -> None:

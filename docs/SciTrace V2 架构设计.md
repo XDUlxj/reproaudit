@@ -48,7 +48,9 @@ SciTrace
 │   │   ├── task_id
 │   │   ├── resources
 │   │   ├── experiment_spec
-│   │   └── experiment_run
+│   │   ├── experiment_run
+│   │   ├── required_specialist
+│   │   └── final_answer
 │   │
 │   ├── Tools
 │   │   ├── DiscoveryAgent-as-Tool
@@ -66,11 +68,7 @@ SciTrace
 │
 ├── DiscoveryAgent
 │   │
-│   ├── DiscoveryAgentState
-│   │   ├── messages
-│   │   ├── task_id
-│   │   ├── resources
-│   │   └── recovery_count
+│   ├── Standard Agent message state
 │   │
 │   ├── Tools(暂定)
 │   │   ├── paper search
@@ -86,13 +84,7 @@ SciTrace
 │
 ├── AnalysisAgent
 │   │
-│   ├── AnalysisAgentState
-│   │   ├── messages
-│   │   ├── task_id
-│   │   ├── resources
-│   │   ├── experiment_spec
-│   │   ├── experiment_run
-│   │   └── recovery_count
+│   ├── Standard Agent message state
 │   │
 │   ├── Tools(暂定)
 │   │   ├── RAG / retrieval
@@ -117,12 +109,7 @@ SciTrace
 │
 ├── ExecutionAgent
 │   │
-│   ├── ExecutionAgentState
-│   │   ├── messages
-│   │   ├── task_id
-│   │   ├── experiment_spec
-│   │   ├── resources
-│   │   └── recovery_count
+│   ├── Standard Agent message state
 │   │
 │   ├── Tools / Services(暂定)
 │   │   ├── environment preparation
@@ -141,21 +128,21 @@ SciTrace
 ├── Agent-as-Tool Wrapper
 │   │
 │   ├── Discovery Wrapper
-│   │   ├── Main State → DiscoveryAgentState
+│   │   ├── Main State → invocation input/context
 │   │   ├── invoke DiscoveryAgent
 │   │   └── Command
 │   │       ├── update resources
 │   │       └── ToolMessage
 │   │
 │   ├── Analysis Wrapper
-│   │   ├── Main State → AnalysisAgentState
+│   │   ├── Main State → invocation input/context
 │   │   ├── invoke AnalysisAgent
 │   │   └── Command
 │   │       ├── ToolMessage
 │   │       └── confirmed Spec → update experiment_spec
 │   │
 │   └── Execution Wrapper
-│       ├── Main State → ExecutionAgentState
+│       ├── Main State → invocation input/context
 │       ├── invoke ExecutionAgent
 │       └── Command
 │           ├── update experiment_run

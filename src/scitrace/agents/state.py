@@ -1,4 +1,4 @@
-"""SciTrace 主 Agent 与 Specialist 的运行时状态。"""
+"""SciTrace 主 Agent 的最小运行时状态。"""
 
 from typing import Literal
 
@@ -8,35 +8,11 @@ from scitrace.models import ExperimentRun, ExperimentSpec, ResearchResource
 
 
 class SciTraceState(MessagesState):
-    """主 Agent 当前工作快照；不是业务历史数据库。"""
+    """跨 Specialist 共享的当前事实、编排约束与 graph 输出。"""
 
     task_id: str
     resources: list[ResearchResource]
     experiment_spec: ExperimentSpec | None
     experiment_run: ExperimentRun | None
     required_specialist: Literal["discovery", "analysis", "execution"] | None
-    execution_attempts: int
-    goal_satisfied: bool
     final_answer: str | None
-
-
-class DiscoveryAgentState(MessagesState):
-    task_id: str
-    resources: list[ResearchResource]
-    recovery_count: int
-
-
-class AnalysisAgentState(MessagesState):
-    task_id: str
-    resources: list[ResearchResource]
-    experiment_spec: ExperimentSpec | None
-    experiment_run: ExperimentRun | None
-    recovery_count: int
-
-
-class ExecutionAgentState(MessagesState):
-    task_id: str
-    resources: list[ResearchResource]
-    experiment_spec: ExperimentSpec
-    experiment_run: ExperimentRun | None
-    recovery_count: int

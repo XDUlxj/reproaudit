@@ -17,17 +17,8 @@ State  → ExecutionResult
 
 ## 输入
 
-调用时wrapper直接从主state构造Discovery state
-```python
-DiscoveryAgentState(
-    task_id=state["task_id"],
-    resources=state["resources"],
-    recovery_count=0,
-    messages=[
-        HumanMessage(content=instruction)
-    ],
-)
-```
+调用时 wrapper 为 DiscoveryAgent 提供标准 message state。`task_id`、当前资源和委派目标
+属于 invocation input/runtime context，不为方便而复制成自定义 Specialist State。
 
 ## 输出
 
@@ -258,4 +249,3 @@ ExecutionResult = Annotated[
     Field(discriminator="status"),
 ]
 ```
-

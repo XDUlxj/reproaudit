@@ -15,12 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 
-from scitrace.agents.state import (
-    AnalysisAgentState,
-    DiscoveryAgentState,
-    ExecutionAgentState,
-    SciTraceState,
-)
+from scitrace.agents.state import SciTraceState
 from scitrace.agents.stubs import run_analysis_stub, run_discovery_stub, run_execution_stub
 from scitrace.agents.testing_model import WalkingSkeletonSupervisorModel
 from scitrace.models import ExperimentSpec, ResearchResource
@@ -43,13 +38,7 @@ def discovery_agent_tool(
 ) -> Command:
     """委派 Discovery specialist，发现并验证科研资源。"""
     parent = runtime.state
-    child_state: DiscoveryAgentState = {
-        "task_id": parent["task_id"],
-        "resources": parent["resources"],
-        "recovery_count": 0,
-        "messages": [HumanMessage(content=request)],
-    }
-    result = run_discovery_stub(child_state)
+    result = run_discovery_stub(parent["task_id"])
     next_required = "analysis" if parent.get("required_specialist") == "discovery" else None
     return Command(
         update={
@@ -79,15 +68,7 @@ def analysis_agent_tool(
 ) -> Command:
     """委派 Analysis specialist，提出方案或验证实验结果。"""
     parent = runtime.state
-    child_state: AnalysisAgentState = {
-        "task_id": parent["task_id"],
-        "resources": parent["resources"],
-        "experiment_spec": parent.get("experiment_spec"),
-        "experiment_run": parent.get("experiment_run"),
-        "recovery_count": 0,
-        "messages": [HumanMessage(content=request)],
-    }
-    result = run_analysis_stub(child_state)
+    result = run_analysis_stub(parent["resources"], parent.get("experiment_run"))
     updates: dict[str, Any] = {"required_specialist": None}
 
     if isinstance(result, ProposeSpec):
@@ -100,7 +81,6 @@ def analysis_agent_tool(
             parent_spec_id=parent["experiment_spec"].id if parent.get("experiment_spec") else None,
         )
     elif isinstance(result, GoalSatisfied):
-        updates["goal_satisfied"] = True
         updates["final_answer"] = result.summary
 
     updates["messages"] = [
@@ -127,19 +107,15 @@ def execution_agent_tool(
     if spec is None:
         raise ValueError("没有正式 ExperimentSpec，禁止调用 Execution specialist")
     selected = {resource.id: resource for resource in parent["resources"]}
-    child_state: ExecutionAgentState = {
-        "task_id": parent["task_id"],
-        "resources": [selected[resource_id] for resource_id in spec.resource_ids],
-        "experiment_spec": spec,
-        "experiment_run": parent.get("experiment_run"),
-        "recovery_count": parent.get("execution_attempts", 0),
-        "messages": [HumanMessage(content=request)],
-    }
-    run, result = run_execution_stub(child_state)
+    # 先验证正式 Spec 引用的资源均在主工作集中；stub 不实际消费资源内容。
+    missing_resource_ids = set(spec.resource_ids) - selected.keys()
+    if missing_resource_ids:
+        missing = ", ".join(sorted(missing_resource_ids))
+        raise ValueError(f"ExperimentSpec 引用了未确认的资源：{missing}")
+    run, result = run_execution_stub(spec)
     return Command(
         update={
             "experiment_run": run,
-            "execution_attempts": parent.get("execution_attempts", 0) + 1,
             "required_specialist": "analysis",
             "messages": [
                 ToolMessage(
@@ -229,7 +205,5 @@ def initial_scitrace_state(task_id: str, query: str) -> SciTraceState:
         "experiment_spec": None,
         "experiment_run": None,
         "required_specialist": None,
-        "execution_attempts": 0,
-        "goal_satisfied": False,
         "final_answer": None,
     }

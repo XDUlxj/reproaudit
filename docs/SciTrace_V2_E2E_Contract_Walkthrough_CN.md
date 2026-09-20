@@ -127,23 +127,8 @@ Main 不需要先生成 `task_type=reproduction` 等固定分类字段。
 不把整个 Main message history 原样传入
 Specialist，而是传明确目标和结构化事实：
 
-``` python
-DiscoveryAgentState(
-    task_id=task.id,
-    resources=[],
-    recovery_count=0,
-    messages=[
-        HumanMessage(
-            content=(
-                "Find and verify the scientific resources required "
-                "to reproduce Table 3 of paper X, including the paper, "
-                "official implementation repository, dataset, and "
-                "required model/checkpoint when applicable."
-            )
-        )
-    ],
-)
-```
+Specialist 第一版使用标准 Agent message state。`task_id`、当前资源等固定事实通过
+Agent-as-Tool 的 invocation input/runtime context 传入；消息只表达本次委派目标。
 
 ## 结论
 
@@ -378,24 +363,8 @@ required_specialist = "analysis"
 
 ## AnalysisAgent Input
 
-``` python
-AnalysisAgentState(
-    task_id="task_01",
-    resources=[...],
-    experiment_spec=None,
-    experiment_run=None,
-    recovery_count=0,
-    messages=[
-        HumanMessage(
-            content=(
-                "Determine how to reproduce Table 3 of paper X. "
-                "Construct an executable experiment specification "
-                "and define the verification criteria."
-            )
-        )
-    ],
-)
-```
+AnalysisAgent 使用标准 message state；当前资源、Spec 和 Run 作为本次只读 invocation
+input/runtime context 提供，不复制为一组尚未被工作流证明需要的自定义可变 State 字段。
 
 ## 结论
 
@@ -735,20 +704,9 @@ Main 调用 ExecutionAgent。
 
 输入：
 
-``` python
-ExecutionAgentState(
-    task_id="task_01",
-    resources=[...],
-    experiment_spec=spec_01,
-    experiment_run=None,
-    recovery_count=0,
-    messages=[
-        HumanMessage(
-            content="Execute the current ExperimentSpec."
-        )
-    ],
-)
-```
+ExecutionAgent 使用标准 message state；正式 Spec 与已确认资源通过本次 invocation
+input/runtime context 提供。只有未来内部执行步骤确实需要 checkpoint/resume 时，才增加
+Execution 专属 State。
 
 ExecutionAgent 可以：
 

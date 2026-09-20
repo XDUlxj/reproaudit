@@ -77,7 +77,7 @@ result = agent.invoke(
     config={"configurable": {"thread_id": "task-001"}},
 )
 
-assert result["goal_satisfied"] is True
+assert result["final_answer"] is not None
 ```
 
 它会自主完成 `Discovery → Analysis 提案 → Execution → Analysis 验证`。这里验证的是编排
