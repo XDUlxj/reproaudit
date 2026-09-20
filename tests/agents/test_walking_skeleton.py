@@ -1,10 +1,14 @@
 """SciTrace Walking Skeleton 的端到端编排测试。"""
 
 import json
+from typing import Any
 
+from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from scitrace.agents import build_walking_skeleton_agent, initial_scitrace_state
+from scitrace.agents import SciTraceContext, build_walking_skeleton_agent, initial_scitrace_state
+from scitrace.agents.orchestration import SPECIALIST_TOOLS, SpecialistRoutingMiddleware
+from scitrace.agents.testing_model import WalkingSkeletonSupervisorModel
 
 
 def test_agent_autonomously_completes_stub_reproduction() -> None:
@@ -39,10 +43,23 @@ def test_agent_autonomously_completes_stub_reproduction() -> None:
     assert result["final_answer"] is not None
     assert isinstance(result["messages"][-1], AIMessage)
 
+    tool_call_ids = {
+        call["id"]
+        for message in result["messages"]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    }
+    tool_messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert tool_messages
+    assert {message.tool_call_id for message in tool_messages} == tool_call_ids
+
     # 同一个 thread_id 的最终状态应已写入真实 LangGraph checkpointer。
     checkpoint = agent.get_state(config)
     assert checkpoint.values["final_answer"] == result["final_answer"]
     assert checkpoint.values["experiment_run"].id == result["experiment_run"].id
+    assert isinstance(checkpoint.values["messages"][-1], AIMessage)
 
 
 def test_initial_state_contains_only_required_main_state_fields() -> None:
@@ -68,3 +85,50 @@ def test_compiled_agent_is_a_real_langgraph() -> None:
 
     assert "model" in graph.nodes
     assert "tools" in graph.nodes
+
+
+def test_need_resources_world_returns_to_discovery() -> None:
+    """确定性模型用于证明 NeedResources 测试世界和 Command 回写机制正确。"""
+    agent = build_walking_skeleton_agent()
+    result = agent.invoke(
+        initial_scitrace_state("task-need-resources", "Reproduce the paper."),
+        config={"configurable": {"thread_id": "need-resources-mechanism"}},
+        context=SciTraceContext(stub_scenario="need_resources"),
+    )
+
+    actions = [
+        json.loads(str(message.content))["action"]
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    ]
+    assert actions == [
+        "discovery_result",
+        "need_resources",
+        "discovery_result",
+        "propose_spec",
+        "execution_succeeded",
+        "goal_satisfied",
+    ]
+    assert {resource.kind for resource in result["resources"]} == {"paper", "repository"}
+
+
+def test_required_specialist_is_enforced_by_middleware() -> None:
+    """Middleware 只落实已有 constraint，同时过滤工具并强制 tool_choice。"""
+    captured: dict[str, Any] = {}
+
+    def handler(request: ModelRequest) -> ModelResponse:
+        captured["tools"] = request.tools
+        captured["tool_choice"] = request.tool_choice
+        return ModelResponse(result=[AIMessage(content="")])
+
+    request = ModelRequest(
+        model=WalkingSkeletonSupervisorModel(),
+        messages=[],
+        tools=list(SPECIALIST_TOOLS),
+        state={"required_specialist": "analysis"},
+    )
+
+    SpecialistRoutingMiddleware().wrap_model_call(request, handler)
+
+    assert [tool.name for tool in captured["tools"]] == ["analysis_agent"]
+    assert captured["tool_choice"] == "analysis_agent"

@@ -8,6 +8,7 @@ from scitrace.models import (
     MetricCriterion,
     MetricOutput,
     PaperResource,
+    RepositoryResource,
     ResearchResource,
     WebLocation,
 )
@@ -18,23 +19,54 @@ from scitrace.models.agent_results import (
     ExperimentSpecDraft,
     ExperimentSpecProposal,
     GoalSatisfied,
+    NeedResources,
     ProposeSpec,
+    ResourceRequirement,
     ResourceSummary,
 )
 
 
-def run_discovery_stub(*, task_id: str, request: str) -> DiscoveryResult:
+def run_discovery_stub(
+    *,
+    task_id: str,
+    request: str,
+    resources: list[ResearchResource],
+    scenario: str,
+    repository_requested: bool,
+) -> DiscoveryResult:
     """返回一个固定但结构合法的论文资源。"""
     _ = request
-    resource = PaperResource(
-        id=f"stub-paper-{task_id}",
-        name="Stub Paper for Walking Skeleton",
-        locations=[WebLocation(url="https://example.invalid/stub-paper.pdf")],
-        metadata={"stub": True},
-    )
+    kinds = {resource.kind for resource in resources}
+    discovered: list[ResearchResource] = []
+    if "paper" not in kinds:
+        discovered.append(
+            PaperResource(
+                id=f"stub-paper-{task_id}",
+                name="Stub Paper for Walking Skeleton",
+                locations=[WebLocation(url="https://example.invalid/stub-paper.pdf")],
+                metadata={"stub": True},
+            )
+        )
+    elif (
+        scenario == "need_resources"
+        and repository_requested
+        and "repository" not in kinds
+    ):
+        discovered.append(
+            RepositoryResource(
+                id=f"stub-repository-{task_id}",
+                name="Stub Repository for Walking Skeleton",
+                locations=[WebLocation(url="https://example.invalid/stub-repository")],
+                revision="stub-revision",
+                metadata={"stub": True},
+            )
+        )
     return DiscoveryResult(
-        discovered_resources=[resource],
-        summary=ResourceSummary(paper_count=1),
+        discovered_resources=discovered,
+        summary=ResourceSummary(
+            paper_count=sum(resource.kind == "paper" for resource in discovered),
+            repository_count=sum(resource.kind == "repository" for resource in discovered),
+        ),
     )
 
 
@@ -43,11 +75,25 @@ def run_analysis_stub(
     resources: list[ResearchResource],
     experiment_run: ExperimentRun | None,
     request: str,
+    scenario: str,
 ) -> AnalysisResult:
     """第一次提出 Spec；Run 成功后给出科学目标已满足。"""
     _ = request
     if experiment_run is not None and experiment_run.status == "succeeded":
         return GoalSatisfied(summary="Stub verifier confirms the reproduction criterion is satisfied.")
+
+    if scenario == "need_resources" and not any(
+        resource.kind == "repository" for resource in resources
+    ):
+        return NeedResources(
+            missing=[
+                ResourceRequirement(
+                    kind="repository",
+                    description="The confirmed implementation repository for the paper.",
+                )
+            ],
+            summary="A confirmed implementation repository is missing.",
+        )
 
     resource_ids = [resource.id for resource in resources]
     proposal = ExperimentSpecProposal(

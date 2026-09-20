@@ -48,6 +48,8 @@ class WalkingSkeletonSupervisorModel(BaseChatModel):
             message = self._delegate("discovery_agent", "Find resources required for the paper reproduction.", messages)
         elif last_action == "discovery_result":
             message = self._delegate("analysis_agent", "Construct a reproducible experiment specification.", messages)
+        elif last_action == "need_resources":
+            message = self._delegate("discovery_agent", "Find the missing confirmed resource.", messages)
         elif last_action == "propose_spec":
             message = self._delegate("execution_agent", "Execute the accepted experiment specification.", messages)
         elif last_action == "execution_succeeded":

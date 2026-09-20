@@ -15,11 +15,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 
+from scitrace.agents.context import SciTraceContext
 from scitrace.agents.state import SciTraceState
 from scitrace.agents.stubs import run_analysis_stub, run_discovery_stub, run_execution_stub
 from scitrace.agents.testing_model import WalkingSkeletonSupervisorModel
 from scitrace.models import ExperimentSpec, ResearchResource
-from scitrace.models.agent_results import GoalSatisfied, ProposeSpec
+from scitrace.models.agent_results import GoalSatisfied, NeedResources, ProposeSpec
 
 
 def _merge_resources(
@@ -30,10 +31,24 @@ def _merge_resources(
     return list(by_id.values())
 
 
+def _has_tool_action(messages: list[Any], expected_action: str) -> bool:
+    """从已有 Tool observation 判断某个结构化结果是否已经发生。"""
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            observation = json.loads(str(message.content))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(observation, dict) and observation.get("action") == expected_action:
+            return True
+    return False
+
+
 @tool("discovery_agent")
 def discovery_agent_tool(
     request: str,  # supervisor 的委派请求
-    runtime: ToolRuntime[SciTraceState],
+    runtime: ToolRuntime[SciTraceContext, SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Delegate scientific resource discovery to the Discovery specialist.
@@ -44,7 +59,14 @@ def discovery_agent_tool(
     reproduction attempt succeeded.
     """
     parent = runtime.state
-    result = run_discovery_stub(task_id=parent["task_id"], request=request)
+    scenario = runtime.context.stub_scenario if runtime.context else "happy_path"
+    result = run_discovery_stub(
+        task_id=parent["task_id"],
+        request=request,
+        resources=parent["resources"],
+        scenario=scenario,
+        repository_requested=_has_tool_action(parent["messages"], "need_resources"),
+    )
     return Command(
         update={
             "resources": _merge_resources(parent["resources"], result.discovered_resources),
@@ -68,7 +90,7 @@ def discovery_agent_tool(
 @tool("analysis_agent")
 def analysis_agent_tool(
     request: str,
-    runtime: ToolRuntime[SciTraceState],
+    runtime: ToolRuntime[SciTraceContext, SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Delegate scientific reasoning to the Analysis specialist.
@@ -80,10 +102,12 @@ def analysis_agent_tool(
     experiment commands or discover external resources directly.
     """
     parent = runtime.state
+    scenario = runtime.context.stub_scenario if runtime.context else "happy_path"
     result = run_analysis_stub(
         resources=parent["resources"],
         experiment_run=parent.get("experiment_run"),
         request=request,
+        scenario=scenario,
     )
     updates: dict[str, Any] = {"required_specialist": None}
 
@@ -99,13 +123,14 @@ def analysis_agent_tool(
     elif isinstance(result, GoalSatisfied):
         updates["final_answer"] = result.summary
 
+    observation: dict[str, Any] = {"action": result.action, "summary": result.summary}
+    if isinstance(result, NeedResources):
+        observation["missing"] = [item.model_dump(mode="json") for item in result.missing]
+
     updates["messages"] = [
         ToolMessage(
             tool_call_id=tool_call_id,
-            content=json.dumps(
-                {"action": result.action, "summary": result.summary},
-                ensure_ascii=False,
-            ),
+            content=json.dumps(observation, ensure_ascii=False),
         )
     ]
     return Command(update=updates)
@@ -114,7 +139,7 @@ def analysis_agent_tool(
 @tool("execution_agent")
 def execution_agent_tool(
     request: str,
-    runtime: ToolRuntime[SciTraceState],
+    runtime: ToolRuntime[SciTraceContext, SciTraceState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Delegate experiment execution to the Execution specialist.
@@ -250,6 +275,7 @@ def build_walking_skeleton_agent(
         tools=list(SPECIALIST_TOOLS),
         middleware=[StateContextMiddleware(), SpecialistRoutingMiddleware()],
         state_schema=SciTraceState,
+        context_schema=SciTraceContext,
         checkpointer=checkpointer or _walking_skeleton_checkpointer(),
         system_prompt=SCITRACE_SYSTEM_PROMPT,
         name="scitrace_agent",
