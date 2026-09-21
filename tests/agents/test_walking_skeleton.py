@@ -116,6 +116,19 @@ def test_need_resources_world_returns_to_discovery() -> None:
     ]
     assert {resource.kind for resource in result["resources"]} == {"paper", "repository"}
 
+    discovery_observations = [
+        json.loads(str(message.content))
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+        and json.loads(str(message.content)).get("action") == "discovery_result"
+    ]
+    assert discovery_observations[0]["newly_discovered"]["paper_count"] == 1
+    assert discovery_observations[1]["newly_discovered"]["paper_count"] == 0
+    assert {item["kind"] for item in discovery_observations[1]["confirmed_resources"]} == {
+        "paper",
+        "repository",
+    }
+
 
 def test_required_specialist_is_enforced_by_middleware() -> None:
     """Middleware 只落实已有 constraint，同时过滤工具并强制 tool_choice。"""

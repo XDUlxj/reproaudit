@@ -9,10 +9,22 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from scitrace.agents import (
+    build_discovery_agent,
+    build_discovery_agent_tool,
     build_glm_model,
+    build_scitrace_agent,
     initial_scitrace_state,
 )
-from tests.agents.fakes import StubWorld, build_test_agent
+from tests.agents.fake_discovery_tools import (
+    DiscoveryToolRecorder,
+    build_fake_discovery_tools,
+)
+from tests.agents.fakes import (
+    StubWorld,
+    analysis_agent_tool,
+    build_test_agent,
+    execution_agent_tool,
+)
 
 
 def _require_real_glm() -> None:
@@ -162,3 +174,48 @@ def test_real_glm_routes_back_to_discovery_for_missing_repository() -> None:
     assert "discovery_result" in actions[need_index + 1 :]
     assert trace["scientifically_verified"] is True
     assert trace["invalid_calls"] == []
+
+
+@pytest.mark.integration
+def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None:
+    """真实 DiscoveryAgent 必须 search 后 inspect，再把已确认资源交还 Supervisor。"""
+    _require_real_glm()
+    recorder = DiscoveryToolRecorder()
+    discovery_agent = build_discovery_agent(
+        model=build_glm_model(),
+        discovery_tools=build_fake_discovery_tools(recorder),
+        context_schema=StubWorld,
+    )
+    discovery_tool = build_discovery_agent_tool(discovery_agent)
+    agent = build_scitrace_agent(
+        model=build_glm_model(),
+        specialist_tools=[discovery_tool, analysis_agent_tool, execution_agent_tool],
+        context_schema=StubWorld,
+    )
+    run_id = "real-supervisor-real-discovery"
+    result = agent.invoke(
+        initial_scitrace_state(
+            f"task-{run_id}",
+            (
+                "Reproduce the primary result from the paper 'ZIPIT! Merging Models from Different "
+                "Tasks without Training'. Find and verify the scientific resources needed for a "
+                "reproducible experiment, execute the accepted specification, and report success "
+                "only after scientific verification."
+            ),
+        ),
+        config={"configurable": {"thread_id": run_id}, "recursion_limit": 60},
+        context=StubWorld(scenario="happy_path"),
+    )
+
+    print(json.dumps({"discovery_tool_trace": recorder.calls}, ensure_ascii=False, indent=2))
+    assert result["resources"]
+    assert result["experiment_spec"] is not None
+    assert result["experiment_run"] is not None
+    assert result["experiment_run"].experiment_spec_id == result["experiment_spec"].id
+    assert result["final_answer"] is not None
+
+    tool_names = [call["tool"] for call in recorder.calls]
+    assert "search_papers" in tool_names
+    assert "inspect_paper" in tool_names
+    assert tool_names.index("search_papers") < tool_names.index("inspect_paper")
+    assert all(resource.metadata.get("verified_by") for resource in result["resources"])
