@@ -2,11 +2,12 @@
 
 import json
 import os
+import time
 from collections import Counter
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from scitrace.agents import (
     build_discovery_agent,
@@ -25,6 +26,98 @@ from tests.agents.fakes import (
     build_test_agent,
     execution_agent_tool,
 )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    (
+        "case_name",
+        "delegated_request",
+        "confirmed",
+        "expected_kinds",
+        "required_tools",
+    ),
+    [
+        (
+            "paper_only",
+            'Find the paper "ZIPIT! Merging Models from Different Tasks without Training".',
+            [],
+            {"paper"},
+            {"search_papers"},
+        ),
+        (
+            "paper_and_repository",
+            "Find both required resources for ZIPIT: (1) the paper and (2) its repository.",
+            [],
+            {"paper", "repository"},
+            {"search_papers", "search_repositories"},
+        ),
+        (
+            "repository_with_existing_paper",
+            "Find the repository required for the already confirmed ZIPIT paper.",
+            [
+                {
+                    "id": "paper-zipit",
+                    "kind": "paper",
+                    "name": "ZIPIT! Merging Models from Different Tasks without Training",
+                }
+            ],
+            {"repository"},
+            {"search_repositories"},
+        ),
+    ],
+)
+def test_real_discovery_agent_v2_autonomously_searches(
+    case_name: str,
+    delegated_request: str,
+    confirmed: list[dict[str, str]],
+    expected_kinds: set[str],
+    required_tools: set[str],
+) -> None:
+    """V2 只给能力与边界，由真实 DiscoveryAgent 自主选择 Search Tools。"""
+    _require_real_glm()
+    recorder = DiscoveryToolRecorder()
+    agent = build_discovery_agent(
+        model=build_glm_model(),
+        discovery_tools=build_fake_discovery_tools(recorder),
+    )
+    instruction = (
+        f"Delegated request:\n{delegated_request}\n\n"
+        "Resources already confirmed before this invocation:\n"
+        f"{json.dumps(confirmed, ensure_ascii=False)}"
+    )
+
+    started_at = time.perf_counter()
+    result = agent.invoke({"messages": [HumanMessage(content=instruction)]})
+    latency_seconds = time.perf_counter() - started_at
+    discovery_result = result["structured_response"]
+    returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
+    returned_ids = {resource.id for resource in discovery_result.discovered_resources}
+    supported_ids = {
+        item["id"]
+        for call in recorder.calls
+        for item in call["result"]
+    }
+    tool_counts = Counter(call["tool"] for call in recorder.calls)
+    trace = {
+        "case": case_name,
+        "tool_calls": recorder.calls,
+        "tool_call_count": dict(tool_counts),
+        "repeated_tool_call_count": sum(max(0, count - 1) for count in tool_counts.values()),
+        "returned_resource_types": sorted(returned_kinds),
+        "duplicate_existing_resources": sorted(
+            returned_ids & {resource["id"] for resource in confirmed}
+        ),
+        "hallucinated_resources": sorted(returned_ids - supported_ids),
+        "discovery_result_valid": True,
+        "latency_seconds": round(latency_seconds, 3),
+    }
+    print(json.dumps(trace, ensure_ascii=False, indent=2))
+
+    assert returned_kinds == expected_kinds
+    assert required_tools <= set(tool_counts)
+    assert trace["duplicate_existing_resources"] == []
+    assert trace["hallucinated_resources"] == []
 
 
 def _require_real_glm() -> None:
@@ -178,7 +271,7 @@ def test_real_glm_routes_back_to_discovery_for_missing_repository() -> None:
 
 @pytest.mark.integration
 def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None:
-    """真实 DiscoveryAgent 必须 search 后 inspect，再把已确认资源交还 Supervisor。"""
+    """真实 Supervisor 与 DiscoveryAgent 完成自主 Search Agent Loop。"""
     _require_real_glm()
     recorder = DiscoveryToolRecorder()
     discovery_agent = build_discovery_agent(
@@ -216,6 +309,10 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
 
     tool_names = [call["tool"] for call in recorder.calls]
     assert "search_papers" in tool_names
-    assert "inspect_paper" in tool_names
-    assert tool_names.index("search_papers") < tool_names.index("inspect_paper")
-    assert all(resource.metadata.get("verified_by") for resource in result["resources"])
+    assert "search_repositories" in tool_names
+    supported_ids = {
+        item["id"]
+        for call in recorder.calls
+        for item in call["result"]
+    }
+    assert {resource.id for resource in result["resources"]} <= supported_ids

@@ -122,12 +122,9 @@ def test_need_resources_world_returns_to_discovery() -> None:
         if isinstance(message, ToolMessage)
         and json.loads(str(message.content)).get("action") == "discovery_result"
     ]
-    assert discovery_observations[0]["newly_discovered"]["paper_count"] == 1
-    assert discovery_observations[1]["newly_discovered"]["paper_count"] == 0
-    assert {item["kind"] for item in discovery_observations[1]["confirmed_resources"]} == {
-        "paper",
-        "repository",
-    }
+    assert discovery_observations[0]["summary"]["paper_count"] == 1
+    assert discovery_observations[1]["summary"]["paper_count"] == 0
+    assert discovery_observations[1]["summary"]["repository_count"] == 1
 
 
 def test_required_specialist_is_enforced_by_middleware() -> None:

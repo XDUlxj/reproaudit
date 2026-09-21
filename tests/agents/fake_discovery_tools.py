@@ -1,4 +1,4 @@
-"""真实 DiscoveryAgent 测试使用的 deterministic search/inspect tools。"""
+"""DiscoveryAgent V2 测试使用的 deterministic Search Tools。"""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,7 +11,7 @@ from scitrace.models import PaperResource, RepositoryResource, WebLocation
 
 @dataclass
 class DiscoveryToolRecorder:
-    """记录 DiscoveryAgent 内部每一次 tool calling。"""
+    """记录 DiscoveryAgent 内部每一次工具调用及其固定返回值。"""
 
     calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -22,74 +22,46 @@ class DiscoveryToolRecorder:
 def build_fake_discovery_tools(
     recorder: DiscoveryToolRecorder,
 ) -> tuple[BaseTool, ...]:
-    """构造固定候选世界；Search 返回 candidate，Inspect 才返回 Resource。"""
+    """构造 Paper + Repository 固定测试世界，不提供任何下一步提示。"""
 
     @tool("search_papers")
-    def search_papers(query: str) -> list[dict[str, str]]:
-        """Search for paper candidates matching a title, topic, author, DOI, or claim."""
-        result = [
-            {
-                "candidate_id": "paper-candidate-zipit",
-                "title": "ZIPIT! Merging Models from Different Tasks without Training",
-                "url": "https://arxiv.org/abs/2305.03053",
-                "source": "fake-arxiv",
-                "verification_status": "unverified",
-                "required_inspection_tool": "inspect_paper",
-            }
-        ]
-        recorder.record("search_papers", {"query": query}, result)
-        return result
+    def search_papers(query: str) -> list[dict[str, Any]]:
+        """Search only for paper resources matching a title, author, DOI, topic, or claim.
 
-    @tool("inspect_paper")
-    def inspect_paper(candidate_id: str) -> dict[str, Any]:
-        """Inspect and verify a paper candidate before accepting it as a resource."""
-        if candidate_id not in {"paper-candidate-zipit", "paper-zipit"}:
-            raise ValueError(f"unknown paper candidate: {candidate_id}")
+        This tool does not return repository resources, so a repository requested by the
+        delegation remains unresolved after using this tool.
+        """
         resource = PaperResource(
             id="paper-zipit",
             name="ZIPIT! Merging Models from Different Tasks without Training",
             arxiv_id="2305.03053",
             locations=[WebLocation(url="https://arxiv.org/abs/2305.03053")],
-            metadata={"verified_by": "fake_inspect_paper", "stub": True},
+            metadata={"source": "fake-arxiv", "stub": True},
         )
-        result = resource.model_dump(mode="json")
-        recorder.record("inspect_paper", {"candidate_id": candidate_id}, result)
+        result = [resource.model_dump(mode="json")]
+        recorder.record("search_papers", {"query": query}, result)
         return result
 
     @tool("search_repositories")
-    def search_repositories(query: str) -> list[dict[str, str]]:
-        """Search for repository candidates related to a confirmed paper or method."""
-        result = [
-            {
-                "candidate_id": "repository-candidate-zipit",
-                "name": "ml-research/zipit",
-                "url": "https://github.com/ml-research/zipit",
-                "source": "fake-github",
-                "verification_status": "unverified",
-                "required_inspection_tool": "inspect_repository",
-            }
-        ]
-        recorder.record("search_repositories", {"query": query}, result)
-        return result
+    def search_repositories(query: str) -> list[dict[str, Any]]:
+        """Search only for repository resources related to a paper, method, author, or project.
 
-    @tool("inspect_repository")
-    def inspect_repository(candidate_id: str) -> dict[str, Any]:
-        """Inspect and verify a repository candidate and its paper relationship."""
-        if candidate_id not in {"repository-candidate-zipit", "repository-zipit"}:
-            raise ValueError(f"unknown repository candidate: {candidate_id}")
+        Use this capability when the delegation requests a repository; finding a paper alone
+        does not provide a repository resource.
+        """
         resource = RepositoryResource(
             id="repository-zipit",
             name="ml-research/zipit",
             revision="fake-tested-revision",
             locations=[WebLocation(url="https://github.com/ml-research/zipit")],
             metadata={
-                "verified_by": "fake_inspect_repository",
+                "source": "fake-github",
                 "related_paper_id": "paper-zipit",
                 "stub": True,
             },
         )
-        result = resource.model_dump(mode="json")
-        recorder.record("inspect_repository", {"candidate_id": candidate_id}, result)
+        result = [resource.model_dump(mode="json")]
+        recorder.record("search_repositories", {"query": query}, result)
         return result
 
-    return search_papers, inspect_paper, search_repositories, inspect_repository
+    return search_papers, search_repositories

@@ -188,10 +188,9 @@ def discovery_agent_tool(
         scenario=scenario,
         repository_requested=_has_tool_action(parent["messages"], "need_resources"),
     )
-    current_resources = _merge_resources(parent["resources"], result.discovered_resources)
     return Command(
         update={
-            "resources": current_resources,
+            "resources": _merge_resources(parent["resources"], result.discovered_resources),
             "required_specialist": None,
             "messages": [
                 ToolMessage(
@@ -199,11 +198,7 @@ def discovery_agent_tool(
                     content=json.dumps(
                         {
                             "action": "discovery_result",
-                            "newly_discovered": result.summary.model_dump(mode="json"),
-                            "confirmed_resources": [
-                                {"kind": resource.kind, "name": resource.name}
-                                for resource in current_resources
-                            ],
+                            "summary": result.summary.model_dump(mode="json"),
                         },
                         ensure_ascii=False,
                     ),
