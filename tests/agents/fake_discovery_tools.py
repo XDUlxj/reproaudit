@@ -83,14 +83,17 @@ class FakeResourceVerifier:
         return None
 
 
-class InMemoryAdmissionRepository:
-    """模拟 Persistence 的原子最终去重与写入。"""
+class InMemoryResourceRepository:
+    """测试专用 ResourceRepository fake，模拟原子准入与 Task 关联。"""
 
     def __init__(self, resource_service: ResourceService) -> None:
         self._resource_service = resource_service
         self.persist_count = 0
+        self.attachments: set[tuple[str, str]] = set()
 
-    def admit_verified(self, resource: ResearchResource) -> ResearchResource:
+    def admit_verified(
+        self, resource: ResearchResource, *, canonical_key: str
+    ) -> ResearchResource:
         candidate = resource.model_dump(mode="json")
         candidate.update(resource.metadata)
         if resource.kind == "repository" and resource.locations:
@@ -106,6 +109,9 @@ class InMemoryAdmissionRepository:
         self.persist_count += 1
         self._resource_service.register_existing([resource])
         return resource
+
+    def attach_to_task(self, task_id: str, resource_id: str) -> None:
+        self.attachments.add((task_id, resource_id))
 
 
 def build_fake_discovery_tools(

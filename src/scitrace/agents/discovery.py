@@ -14,10 +14,9 @@ from langgraph.types import Command
 
 from scitrace.agents.middleware import ResourceDeduplicationMiddleware
 from scitrace.agents.state import SciTraceState
-from scitrace.application import ResourceAdmissionService
 from scitrace.models import ResearchResource
 from scitrace.models.discovery import DiscoverySelection, SearchObservation
-from scitrace.services import ResourceService
+from scitrace.services import ResourceAdmissionService, ResourceService
 
 DISCOVERY_SYSTEM_PROMPT = """You are the Discovery specialist in a scientific reproduction system.
 
@@ -145,6 +144,7 @@ def build_discovery_agent_tool(
             parent_resources=parent["resources"],
             observed_new_candidates=observed_new_candidates,
             observed_existing_resource_ids=observed_existing_resource_ids,
+            task_id=parent["task_id"],
         )
         discovered = result.discovered_resources
         current_resources = _merge_resources(parent["resources"], discovered)

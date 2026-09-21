@@ -5,6 +5,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import TypeAdapter
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from scitrace.models import ExperimentRun, ExperimentSpec, ResearchResource, Task
@@ -118,8 +119,49 @@ class ResourceRepository(_CreateOnlyRepository[ResearchResource, ResourceRow]):
     row_type = ResourceRow
     adapter = TypeAdapter(ResearchResource)
 
-    def create(self, entity: ResearchResource) -> ResearchResource:
-        return super().create(entity, kind=entity.kind, name=entity.name)
+    def create(
+        self, entity: ResearchResource, *, canonical_key: str
+    ) -> ResearchResource:
+        return super().create(
+            entity,
+            kind=entity.kind,
+            name=entity.name,
+            canonical_key=canonical_key,
+        )
+
+    def get_by_canonical_key(self, canonical_key: str) -> ResearchResource | None:
+        """按资源科学身份读取正式 ResearchResource。"""
+        statement = select(ResourceRow).where(ResourceRow.canonical_key == canonical_key)
+        with self._session_factory() as session:
+            row = session.scalar(statement)
+            return None if row is None else self.adapter.validate_python(row.payload)
+
+    def admit_verified(
+        self, resource: ResearchResource, *, canonical_key: str
+    ) -> ResearchResource:
+        """按 canonical identity 原子准入已验证资源。
+
+        事务内先查询以覆盖通常路径；数据库 UNIQUE 约束负责并发竞态的
+        最终仲裁。若另一事务先完成写入，则回读并返回数据库中的资源。
+        """
+        try:
+            with self._session_factory.begin() as session:
+                session.add(
+                    self._to_row(
+                        resource,
+                        kind=resource.kind,
+                        name=resource.name,
+                        canonical_key=canonical_key,
+                    )
+                )
+                session.flush()
+        except IntegrityError:
+            # 并发写入发生唯一键冲突后，失败事务已回滚；在新事务中回读赢家。
+            existing = self.get_by_canonical_key(canonical_key)
+            if existing is None:
+                raise
+            return existing
+        return resource
 
     def attach_to_task(self, task_id: str, resource_id: str) -> None:
         """将已接受资源关联到 Task；重复关联是幂等操作。"""

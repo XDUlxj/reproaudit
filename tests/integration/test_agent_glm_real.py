@@ -16,14 +16,13 @@ from scitrace.agents import (
     build_scitrace_agent,
     initial_scitrace_state,
 )
-from scitrace.application import ResourceAdmissionService
 from scitrace.models import PaperResource
 from scitrace.models.discovery import SearchObservation
-from scitrace.services import ResourceService
+from scitrace.services import ResourceAdmissionService, ResourceService
 from tests.agents.fake_discovery_tools import (
     DiscoveryToolRecorder,
     FakeResourceVerifier,
-    InMemoryAdmissionRepository,
+    InMemoryResourceRepository,
     build_fake_discovery_tools,
 )
 from tests.agents.fakes import (
@@ -110,7 +109,7 @@ def test_real_discovery_agent_v1_autonomously_searches(
     admission = ResourceAdmissionService(
         resource_service=resource_service,
         verifier=verifier,
-        repository=InMemoryAdmissionRepository(resource_service),
+        repository=InMemoryResourceRepository(resource_service),
     )
     agent = build_discovery_agent(
         model=build_glm_model(),
@@ -158,6 +157,7 @@ def test_real_discovery_agent_v1_autonomously_searches(
         parent_resources=parent_resources,
         observed_new_candidates=observed_new,
         observed_existing_resource_ids=observed_existing_ids,
+        task_id="task-discovery-eval",
     )
     returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
     returned_ids = {resource.id for resource in discovery_result.discovered_resources}
@@ -362,7 +362,7 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
     admission = ResourceAdmissionService(
         resource_service=resource_service,
         verifier=FakeResourceVerifier(),
-        repository=InMemoryAdmissionRepository(resource_service),
+        repository=InMemoryResourceRepository(resource_service),
     )
     discovery_agent = build_discovery_agent(
         model=build_glm_model(),

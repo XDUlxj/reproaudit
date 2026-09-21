@@ -22,6 +22,7 @@ from scitrace.persistence import (
 )
 from scitrace.persistence.database import DatabaseRuntime
 from scitrace.persistence.tables import TaskRow
+from scitrace.services import ResourceService
 
 
 def test_persists_task_and_replay_is_idempotent(database: DatabaseRuntime) -> None:
@@ -70,14 +71,51 @@ def test_persists_and_attaches_resource(database: DatabaseRuntime) -> None:
     tasks = TaskRepository(database.session_factory)
     resources = ResourceRepository(database.session_factory)
     task = tasks.create(Task(query="复现论文 X"))
-    resource = resources.create(
-        PaperResource(name="Paper X", locations=[WebLocation(url="https://example.org/x")])
+    resource = PaperResource(
+        name="Paper X",
+        doi="10.1000/paper-x",
+        locations=[WebLocation(url="https://example.org/x")],
     )
+    resources.create(resource, canonical_key="paper:doi:10.1000/paper-x")
 
     resources.attach_to_task(task.id, resource.id)
     resources.attach_to_task(task.id, resource.id)
 
     assert resources.list_for_task(task.id) == [resource]
+
+
+def test_admit_verified_resource_is_idempotent_by_canonical_identity(
+    database: DatabaseRuntime,
+) -> None:
+    repository = ResourceRepository(database.session_factory)
+    first = PaperResource(id="paper-first", name="Paper", doi="10.1000/Example")
+    duplicate = PaperResource(
+        id="paper-duplicate",
+        name="Same Paper from another provider",
+        doi="https://doi.org/10.1000/example",
+    )
+
+    assert repository.admit_verified(
+        first, canonical_key="paper:doi:10.1000/example"
+    ) == first
+    assert repository.admit_verified(
+        duplicate, canonical_key="paper:doi:10.1000/example"
+    ) == first
+    assert repository.get(duplicate.id) is None
+    assert repository.get_by_canonical_key("paper:doi:10.1000/example") == first
+
+
+def test_canonical_key_for_paper() -> None:
+    service = ResourceService()
+    resource = PaperResource(
+        name="Paper", doi="https://doi.org/10.1000/Example"
+    )
+
+    assert service.canonical_key(resource) == "paper:doi:10.1000/example"
+
+
+def test_canonical_key_missing_identity_returns_none() -> None:
+    assert ResourceService().canonical_key(PaperResource(name="Identity missing")) is None
 
 
 def test_spec_requires_existing_task_and_parent(database: DatabaseRuntime) -> None:

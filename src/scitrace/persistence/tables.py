@@ -38,6 +38,10 @@ class ResourceRow(RecordColumns, Base):
 
     kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    # canonical identity 是资源并发准入的数据库级最终防线。
+    canonical_key: Mapped[str] = mapped_column(
+        String(512), nullable=False, unique=True, index=True
+    )
 
 
 class ExperimentSpecRow(RecordColumns, Base):

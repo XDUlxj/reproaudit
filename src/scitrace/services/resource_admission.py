@@ -6,23 +6,14 @@ from typing import Any, Protocol
 from scitrace.models import ResearchResource
 from scitrace.models.agent_results import DiscoveryResult, ResourceSummary
 from scitrace.models.discovery import DiscoverySelection
-from scitrace.services import ResourceService
+from scitrace.persistence import ResourceRepository
+from scitrace.services.resource import ResourceService
 
 
 class ResourceVerifier(Protocol):
     """验证 NEW Candidate；失败时返回 None。"""
 
     def verify(self, candidate: dict[str, Any]) -> ResearchResource | None: ...
-
-
-class ResourceAdmissionRepository(Protocol):
-    """持久化层的原子准入端口。
-
-    实现必须在事务/唯一约束保护下执行最终去重：若并发流程已创建相同
-    canonical identity，返回已有 Resource；否则写入并返回新 Resource。
-    """
-
-    def admit_verified(self, resource: ResearchResource) -> ResearchResource: ...
 
 
 class ResourceAdmissionService:
@@ -33,7 +24,7 @@ class ResourceAdmissionService:
         *,
         resource_service: ResourceService,
         verifier: ResourceVerifier,
-        repository: ResourceAdmissionRepository,
+        repository: ResourceRepository,
     ) -> None:
         self._resource_service = resource_service
         self._verifier = verifier
@@ -46,6 +37,7 @@ class ResourceAdmissionService:
         parent_resources: list[ResearchResource],
         observed_new_candidates: list[dict[str, Any]],
         observed_existing_resource_ids: set[str],
+        task_id: str,
     ) -> DiscoveryResult:
         """EXISTING 直接复用；NEW 强制 Verify 后交给 Persistence 原子准入。"""
         self._resource_service.register_existing(parent_resources)
@@ -77,12 +69,21 @@ class ResourceAdmissionService:
                 verified = self._verifier.verify(candidate)
                 if verified is None:
                     continue
-                resource = self._repository.admit_verified(verified)
+                # Verify 可能补全 DOI 等权威身份，最终 key 必须基于验证结果重算。
+                canonical_key = self._resource_service.canonical_key(verified)
+                if canonical_key is None:
+                    continue
+                resource = self._repository.admit_verified(
+                    verified,
+                    canonical_key=canonical_key,
+                )
                 self._resource_service.register_existing([resource])
             if resource.id not in parent_resource_ids:
                 admitted[resource.id] = resource
 
         resources = list(admitted.values())
+        for resource in resources:
+            self._repository.attach_to_task(task_id, resource.id)
         return DiscoveryResult(
             discovered_resources=resources,
             summary=ResourceSummary(

@@ -2,10 +2,9 @@
 
 from typing import Any
 
-from scitrace.application import ResourceAdmissionService
 from scitrace.models import PaperResource, ResearchResource
 from scitrace.models.discovery import DiscoverySelection
-from scitrace.services import ResourceService
+from scitrace.services import ResourceAdmissionService, ResourceService
 
 
 class RecordingVerifier:
@@ -22,10 +21,16 @@ class RecordingRepository:
     def __init__(self, returned: ResearchResource) -> None:
         self.returned = returned
         self.calls: list[ResearchResource] = []
+        self.attachments: list[tuple[str, str]] = []
 
-    def admit_verified(self, resource: ResearchResource) -> ResearchResource:
+    def admit_verified(
+        self, resource: ResearchResource, *, canonical_key: str
+    ) -> ResearchResource:
         self.calls.append(resource)
         return self.returned
+
+    def attach_to_task(self, task_id: str, resource_id: str) -> None:
+        self.attachments.append((task_id, resource_id))
 
 
 def _candidate(doi: str = "10.1000/new") -> dict[str, Any]:
@@ -52,6 +57,7 @@ def test_existing_resource_is_reused_without_verify_or_persist() -> None:
         parent_resources=[],
         observed_new_candidates=[],
         observed_existing_resource_ids={existing.id},
+        task_id="task-test",
     )
 
     assert [resource.id for resource in result.discovered_resources] == [existing.id]
@@ -75,11 +81,13 @@ def test_new_resource_is_mandatorily_verified_and_persisted() -> None:
         parent_resources=[],
         observed_new_candidates=[candidate],
         observed_existing_resource_ids=set(),
+        task_id="task-test",
     )
 
     assert result.discovered_resources == [verified]
     assert verifier.calls == [candidate]
     assert repository.calls == [verified]
+    assert repository.attachments == [("task-test", verified.id)]
 
 
 def test_verify_failure_and_ambiguous_candidate_are_not_admitted() -> None:
@@ -100,6 +108,7 @@ def test_verify_failure_and_ambiguous_candidate_are_not_admitted() -> None:
         parent_resources=[],
         observed_new_candidates=[strong, ambiguous],
         observed_existing_resource_ids=set(),
+        task_id="task-test",
     )
 
     assert result.discovered_resources == []
@@ -128,6 +137,7 @@ def test_unobserved_candidate_or_existing_id_is_rejected() -> None:
         parent_resources=[],
         observed_new_candidates=[],
         observed_existing_resource_ids=set(),
+        task_id="task-test",
     )
 
     assert result.discovered_resources == []
@@ -156,12 +166,14 @@ def test_persistence_final_dedup_may_reuse_concurrently_created_resource() -> No
         parent_resources=[],
         observed_new_candidates=[candidate],
         observed_existing_resource_ids=set(),
+        task_id="task-test",
     )
 
     assert [resource.id for resource in result.discovered_resources] == [
         "paper-existing-at-persist"
     ]
     assert repository.calls == [verified]
+    assert repository.attachments == [("task-test", concurrently_created.id)]
 
 
 def test_parent_resource_is_removed_from_delta_and_summary_is_recomputed() -> None:
@@ -179,6 +191,7 @@ def test_parent_resource_is_removed_from_delta_and_summary_is_recomputed() -> No
         parent_resources=[parent],
         observed_new_candidates=[],
         observed_existing_resource_ids={parent.id},
+        task_id="task-test",
     )
 
     assert result.discovered_resources == []

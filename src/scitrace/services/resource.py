@@ -55,6 +55,43 @@ def _resource_candidate(resource: ResearchResource) -> dict[str, Any]:
     return candidate
 
 
+def _canonical_identity(
+    candidate: dict[str, Any] | ResearchResource,
+) -> tuple[str, str] | None:
+    """提取规范身份的类型和值；身份不足时返回 ``None``。"""
+    # ResearchResource 是带 discriminator 的 Annotated Union，不能用于 isinstance。
+    value = candidate if isinstance(candidate, dict) else _resource_candidate(candidate)
+    kind = value.get("kind")
+    if kind == "paper":
+        doi = _normalized_doi(value.get("doi"))
+        if doi:
+            return "doi", doi
+        arxiv_id = _normalized_text(value.get("arxiv_id"))
+        if arxiv_id:
+            return "arxiv", arxiv_id
+    elif kind == "repository":
+        identity = _repository_identity(value)
+        if identity:
+            return "repository", ":".join(identity)
+    elif kind == "dataset":
+        parts = (
+            _normalized_text(value.get("provider")),
+            _normalized_text(value.get("dataset_id")),
+            _normalized_text(value.get("version")),
+        )
+        if all(parts):
+            return "dataset", ":".join(part for part in parts if part)
+    elif kind == "model":
+        parts = (
+            _normalized_text(value.get("provider")),
+            _normalized_text(value.get("model_id")),
+            _normalized_text(value.get("revision")),
+        )
+        if all(parts):
+            return "model", ":".join(part for part in parts if part)
+    return None
+
+
 class ResourceService:
     """以强身份标识保证 Resource 去重；可由持久化适配器提供全局已知资源。"""
 
@@ -71,62 +108,33 @@ class ResourceService:
         """把持久化层或 Parent State 已确认的全局资源加入匹配视图。"""
         self._resources.update({resource.id: resource for resource in resources})
 
+    def canonical_key(
+        self, resource_or_candidate: dict[str, Any] | ResearchResource
+    ) -> str | None:
+        """生成所有去重与持久化流程共用的稳定 canonical key。"""
+        identity = _canonical_identity(resource_or_candidate)
+        if identity is None:
+            return None
+        identity_type, value = identity
+        if identity_type in {"repository", "dataset", "model"}:
+            return f"{identity_type}:{value}"
+        return f"paper:{identity_type}:{value}"
+
     def deduplicate(self, candidate: dict[str, Any]) -> DeduplicationResult:
         """只使用确定性强身份匹配，信息不足时返回 ambiguous。"""
         value = deepcopy(candidate)
         kind = value.get("kind")
-        identity: tuple[str, Any] | None = None
-        if kind == "paper":
-            doi = _normalized_doi(value.get("doi"))
-            arxiv_id = _normalized_text(value.get("arxiv_id"))
-            if doi:
-                identity = ("doi", doi)
-            elif arxiv_id:
-                identity = ("arxiv_id", arxiv_id)
-        elif kind == "repository":
-            repository = _repository_identity(value)
-            if repository:
-                identity = ("repository_identity", repository)
-        elif kind == "dataset":
-            provider = _normalized_text(value.get("provider"))
-            dataset_id = _normalized_text(value.get("dataset_id"))
-            version = _normalized_text(value.get("version"))
-            if provider and dataset_id and version:
-                identity = ("dataset_identity", (provider, dataset_id, version))
-        elif kind == "model":
-            provider = _normalized_text(value.get("provider"))
-            model_id = _normalized_text(value.get("model_id"))
-            revision = _normalized_text(value.get("revision"))
-            if provider and model_id and revision:
-                identity = ("model_identity", (provider, model_id, revision))
-
-        if identity is None:
+        canonical_key = self.canonical_key(value)
+        if canonical_key is None:
             return DeduplicationResult(status="ambiguous", candidate=value)
 
-        matched_by, expected = identity
+        identity = _canonical_identity(value)
+        assert identity is not None
+        matched_by, _ = identity
         for resource in self._resources.values():
             if resource.kind != kind:
                 continue
-            known = _resource_candidate(resource)
-            if matched_by == "doi":
-                actual = _normalized_doi(known.get("doi"))
-            elif matched_by == "arxiv_id":
-                actual = _normalized_text(known.get("arxiv_id"))
-            elif matched_by == "repository_identity":
-                actual = _repository_identity(known)
-            elif matched_by == "dataset_identity":
-                actual = (
-                    _normalized_text(known.get("provider")),
-                    _normalized_text(known.get("dataset_id")),
-                    _normalized_text(known.get("version")),
-                )
-            else:
-                actual = (
-                    _normalized_text(known.get("provider")),
-                    _normalized_text(known.get("model_id")),
-                    _normalized_text(known.get("revision")),
-                )
-            if actual == expected:
+            if self.canonical_key(resource) == canonical_key:
                 return DeduplicationResult(
                     status="existing",
                     candidate=value,
