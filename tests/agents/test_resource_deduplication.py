@@ -97,42 +97,6 @@ def test_resolve_result_is_deduplicated_again() -> None:
     assert observation["existing_resources"][0]["resource"]["id"] == "repository-existing"
 
 
-def test_final_promotion_guard_reuses_resource_with_same_strong_identity() -> None:
-    existing = PaperResource(
-        id="paper-existing",
-        name="Existing Paper",
-        arxiv_id="2305.03053",
-    )
-    service = ResourceService([existing])
-    duplicate = PaperResource(
-        id="paper-duplicate",
-        name="Same Paper From Another Task",
-        arxiv_id="2305.03053",
-        locations=[WebLocation(url="https://publisher.test/paper")],
-    )
-
-    promoted = service.promote(duplicate)
-
-    assert promoted.id == "paper-existing"
-    assert {resource.id for resource in service.list_resources()} == {"paper-existing"}
-
-
-def test_final_promotion_guard_rejects_unverified_new_resource() -> None:
-    service = ResourceService()
-    resource = PaperResource(
-        id="paper-invented",
-        name="Invented Paper",
-        doi="10.1000/invented",
-    )
-
-    try:
-        service.promote(resource)
-    except ValueError as error:
-        assert "没有本轮 Verify Tool 证据" in str(error)
-    else:
-        raise AssertionError("未经 Verify 的新资源不应通过最终提升守卫")
-
-
 def test_parent_resources_can_be_registered_for_automatic_deduplication() -> None:
     service = ResourceService()
     parent_resource = PaperResource(

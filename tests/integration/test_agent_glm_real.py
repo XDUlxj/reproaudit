@@ -94,12 +94,8 @@ def test_real_discovery_agent_v2_autonomously_searches(
     result = agent.invoke({"messages": [HumanMessage(content=instruction)]})
     latency_seconds = time.perf_counter() - started_at
     discovery_result = result["structured_response"]
-    promoted = [
-        resource_service.promote(resource)
-        for resource in discovery_result.discovered_resources
-    ]
-    returned_kinds = {resource.kind for resource in promoted}
-    returned_ids = {resource.id for resource in promoted}
+    returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
+    returned_ids = {resource.id for resource in discovery_result.discovered_resources}
     supported_ids = {
         call["result"]["verified_resource"]["id"]
         for call in recorder.calls

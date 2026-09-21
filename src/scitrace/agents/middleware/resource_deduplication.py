@@ -7,9 +7,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
 from langchain.messages import ToolMessage
 from langgraph.types import Command
-from pydantic import TypeAdapter, ValidationError
 
-from scitrace.models import ResearchResource
 from scitrace.models.discovery import ExistingResourceMatch, SearchObservation
 from scitrace.services.resource import ResourceService
 
@@ -33,9 +31,6 @@ class ResourceDeduplicationMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command[Any]:
         result = handler(request)
         tool_name = request.tool_call["name"]
-        if tool_name == "verify_resource" and isinstance(result, ToolMessage):
-            self._record_verified_resource(result.content)
-            return result
         if tool_name not in _DEDUPLICATED_TOOLS or not isinstance(result, ToolMessage):
             return result
 
@@ -81,13 +76,3 @@ class ResourceDeduplicationMiddleware(AgentMiddleware):
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             return value
         return None
-
-    def _record_verified_resource(self, content: Any) -> None:
-        if not isinstance(content, str):
-            return
-        try:
-            value = json.loads(content)
-            resource = TypeAdapter(ResearchResource).validate_python(value["verified_resource"])
-        except (json.JSONDecodeError, KeyError, TypeError, ValidationError):
-            return
-        self._resource_service.record_verification(resource)

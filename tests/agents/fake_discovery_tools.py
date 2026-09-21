@@ -85,7 +85,7 @@ def build_fake_discovery_tools(
 
     @tool("verify_resource")
     def verify_resource(candidate: dict[str, Any]) -> dict[str, Any]:
-        """Verify a candidate and return the only Resource eligible for final promotion.
+        """Verify a candidate and return a Resource eligible for DiscoveryResult.
 
         The verified_resource is authoritative: preserve its ID and metadata exactly when
         including it in DiscoveryResult.

@@ -126,7 +126,7 @@ def build_discovery_agent_tool(
         confirmed = [
             {"id": resource.id, "kind": resource.kind, "name": resource.name}
             for resource in parent["resources"]
-        ]
+        ]  # 告知 Agent 当前已经确认的资源
         instruction = (
             f"Delegated request:\n{request}\n\n"
             "Resources already confirmed before this invocation:\n"
@@ -136,29 +136,16 @@ def build_discovery_agent_tool(
             {"messages": [HumanMessage(content=instruction)]},
             context=runtime.context,
         )
-        result = child_result.get("structured_response")
+        result = child_result.get("structured_response")  # 取结构化结果
         if not isinstance(result, DiscoveryResult):
             raise RuntimeError("DiscoveryAgent 未返回合法的 DiscoveryResult")
 
         parent_ids = {resource.id for resource in parent["resources"]}
-        raw_counts = {
-            "paper_count": sum(
-                resource.kind == "paper" for resource in result.discovered_resources
-            ),
-            "repository_count": sum(
-                resource.kind == "repository" for resource in result.discovered_resources
-            ),
-            "dataset_count": sum(
-                resource.kind == "dataset" for resource in result.discovered_resources
-            ),
-            "model_count": sum(
-                resource.kind == "model" for resource in result.discovered_resources
-            ),
-        }
-        if result.summary.model_dump(mode="json") != raw_counts:
-            raise RuntimeError("DiscoveryResult.summary 与 discovered_resources 不一致")
-        promoted = [resource_service.promote(resource) for resource in result.discovered_resources]
-        discovered = [resource for resource in promoted if resource.id not in parent_ids]
+        discovered = [
+            resource
+            for resource in result.discovered_resources
+            if resource.id not in parent_ids
+        ]
         current_resources = _merge_resources(parent["resources"], discovered)
         counts = {
             "paper_count": sum(resource.kind == "paper" for resource in discovered),
@@ -181,6 +168,6 @@ def build_discovery_agent_tool(
                     )
                 ],
             }
-        )
+        )  # 更新父 State
 
     return discovery_agent_tool

@@ -1,4 +1,4 @@
-"""科研资源强身份匹配与最终提升服务。"""
+"""科研资源强身份匹配服务。"""
 
 from collections.abc import Iterable
 from copy import deepcopy
@@ -10,12 +10,14 @@ from scitrace.models.discovery import DeduplicationResult
 
 
 def _normalized_text(value: Any) -> str | None:
+    """统一字符串。"""
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip().lower()
 
 
 def _normalized_doi(value: Any) -> str | None:
+    """规范 DOI。"""
     normalized = _normalized_text(value)
     if normalized is None:
         return None
@@ -26,6 +28,7 @@ def _normalized_doi(value: Any) -> str | None:
 
 
 def _repository_identity(candidate: dict[str, Any]) -> tuple[str, str, str] | None:
+    """提取仓库身份。"""
     provider = _normalized_text(candidate.get("provider"))
     owner = _normalized_text(candidate.get("owner"))
     name = _normalized_text(candidate.get("name"))
@@ -42,6 +45,7 @@ def _repository_identity(candidate: dict[str, Any]) -> tuple[str, str, str] | No
 
 
 def _resource_candidate(resource: ResearchResource) -> dict[str, Any]:
+    """将 ResearchResource 转为 Candidate，供强身份匹配使用。"""
     candidate = resource.model_dump(mode="json")
     if resource.kind == "repository" and resource.locations:
         location = resource.locations[0]
@@ -55,7 +59,6 @@ class ResourceService:
 
     def __init__(self, resources: Iterable[ResearchResource] = ()) -> None:
         self._resources = {resource.id: resource for resource in resources}
-        self._verified: dict[str, ResearchResource] = {}
 
     def list_resources(self) -> list[ResearchResource]:
         return list(self._resources.values())
@@ -103,21 +106,3 @@ class ResourceService:
                     matched_by=matched_by,
                 )
         return DeduplicationResult(status="new", candidate=value)
-
-    def record_verification(self, resource: ResearchResource) -> None:
-        """记录 Verify Tool 的权威输出，供最终提升守卫使用。"""
-        self._verified[resource.id] = resource
-
-    def promote(self, resource: ResearchResource) -> ResearchResource:
-        """最终提升前再次去重，避免 stale observation 或并发创建重复实体。"""
-        result = self.deduplicate(_resource_candidate(resource))
-        if result.status == "ambiguous":
-            raise ValueError(f"资源 {resource.id} 缺少可确定去重的强身份")
-        if result.status == "existing":
-            assert result.existing_resource is not None
-            return result.existing_resource
-        verified = self._verified.get(resource.id)
-        if verified is None:
-            raise ValueError(f"资源 {resource.id} 没有本轮 Verify Tool 证据")
-        self._resources[verified.id] = verified
-        return verified
