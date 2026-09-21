@@ -1,10 +1,19 @@
 """真实 GLM + deterministic Specialist Stub 的 Supervisor Routing E2E。"""
 
+import argparse
 import json
 import os
+import sys
 import time
 from collections import Counter
+from pathlib import Path
 from typing import Any
+
+# 支持直接执行本文件；pytest/module 方式运行时不会修改既有导入路径。
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -426,27 +435,29 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
         context_schema=StubWorld,
     )
     run_id = "real-supervisor-real-discovery"
-    result = agent.invoke(
-        initial_scitrace_state(
-            f"task-{run_id}",
-            (
-                "Reproduce the primary result from the paper 'ZIPIT! Merging Models from Different "
-                "Tasks without Training'. Find and verify the scientific resources needed for a "
-                "reproducible experiment, execute the accepted specification, and report success "
-                "only after scientific verification."
+    try:
+        result = agent.invoke(
+            initial_scitrace_state(
+                f"task-{run_id}",
+                (
+                    "Reproduce the primary result from the paper 'ZIPIT! Merging Models from "
+                    "Different Tasks without Training'. Find and verify the scientific resources "
+                    "needed for a reproducible experiment, execute the accepted specification, "
+                    "and report success only after scientific verification."
+                ),
             ),
-        ),
-        config={"configurable": {"thread_id": run_id}, "recursion_limit": 60},
-        context=StubWorld(scenario="happy_path"),
-    )
-
-    print(
-        json.dumps(
-            {"discovery_invocations": recording_discovery_agent.invocations},
-            ensure_ascii=False,
-            indent=2,
+            config={"configurable": {"thread_id": run_id}, "recursion_limit": 60},
+            context=StubWorld(scenario="happy_path"),
         )
-    )
+    finally:
+        # 即使 Supervisor 递归超限或出现 contract error，也保留已发生的 Discovery 事实。
+        print(
+            json.dumps(
+                {"discovery_invocations": recording_discovery_agent.invocations},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     assert result["resources"]
     assert result["experiment_spec"] is not None
     assert result["experiment_run"] is not None
@@ -463,3 +474,34 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
         "model-zipit-checkpoint",
     }
     assert {resource.id for resource in result["resources"]} <= supported_ids
+
+
+def main(argv: list[str] | None = None) -> int:
+    """从命令行直接运行真实 GLM 场景并打印 trajectory。"""
+    parser = argparse.ArgumentParser(description="运行 SciTrace 真实 GLM 集成验证")
+    parser.add_argument(
+        "--scenario",
+        choices=("nested", "discovery", "all"),
+        default="nested",
+        help="nested=Supervisor 嵌套链路；discovery=六个 Discovery 场景；all=全部真实场景",
+    )
+    args = parser.parse_args(argv)
+    expressions = {
+        "nested": "real_supervisor_and_discovery_agent_complete_nested_tool_loop",
+        "discovery": "real_discovery_agent_v1_autonomously_searches",
+        "all": "real_",
+    }
+    os.environ["SCITRACE_RUN_GLM_INTEGRATION"] = "1"
+    return pytest.main(
+        [
+            str(Path(__file__).resolve()),
+            "-q",
+            "-s",
+            "-k",
+            expressions[args.scenario],
+        ]
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
