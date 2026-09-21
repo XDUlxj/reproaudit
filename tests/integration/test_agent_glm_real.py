@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,24 @@ class RecordingDiscoveryAgent:
             }
         )
         return result
+
+
+def _save_discovery_trace(payload: dict[str, Any], *, scenario: str) -> Path:
+    """将真实模型轨迹写入测试专用目录，避免终端输出成为唯一证据。"""
+    output_dir = Path(
+        os.getenv(
+            "SCITRACE_TEST_TRACE_DIR",
+            Path(__file__).resolve().parents[1] / "test_outputs" / "discovery_traces",
+        )
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    output_path = output_dir / f"{scenario}-{timestamp}.json"
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 @pytest.mark.integration
@@ -247,6 +266,9 @@ def test_real_discovery_agent_v1_autonomously_searches(
         "latency_seconds": round(latency_seconds, 3),
     }
     print(json.dumps(trace, ensure_ascii=False, indent=2))
+    if os.getenv("SCITRACE_SAVE_TEST_TRACE") == "1":
+        output_path = _save_discovery_trace(trace, scenario=case_name)
+        print(f"Discovery trace saved to: {output_path}")
 
     assert returned_kinds == expected_kinds
     assert set(selection.selected_new_candidate_ids) <= set(observed_new)
@@ -435,6 +457,7 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
         context_schema=StubWorld,
     )
     run_id = "real-supervisor-real-discovery"
+    error: dict[str, str] | None = None
     try:
         result = agent.invoke(
             initial_scitrace_state(
@@ -449,15 +472,20 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
             config={"configurable": {"thread_id": run_id}, "recursion_limit": 60},
             context=StubWorld(scenario="happy_path"),
         )
+    except Exception as exc:
+        error = {"type": type(exc).__name__, "message": str(exc)}
+        raise
     finally:
         # 即使 Supervisor 递归超限或出现 contract error，也保留已发生的 Discovery 事实。
-        print(
-            json.dumps(
-                {"discovery_invocations": recording_discovery_agent.invocations},
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        trace_payload = {
+            "scenario": "nested",
+            "error": error,
+            "discovery_invocations": recording_discovery_agent.invocations,
+        }
+        print(json.dumps(trace_payload, ensure_ascii=False, indent=2))
+        if os.getenv("SCITRACE_SAVE_TEST_TRACE") == "1":
+            output_path = _save_discovery_trace(trace_payload, scenario="nested")
+            print(f"Discovery trace saved to: {output_path}")
     assert result["resources"]
     assert result["experiment_spec"] is not None
     assert result["experiment_run"] is not None
@@ -492,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         "all": "real_",
     }
     os.environ["SCITRACE_RUN_GLM_INTEGRATION"] = "1"
+    os.environ["SCITRACE_SAVE_TEST_TRACE"] = "1"
     return pytest.main(
         [
             str(Path(__file__).resolve()),
