@@ -14,7 +14,8 @@ from scitrace.services.resource import ResourceService
 _DEDUPLICATED_TOOLS = {
     "search_papers",
     "search_repositories",
-    "resolve_resource_identity",
+    "search_datasets",
+    "search_models",
 }
 
 

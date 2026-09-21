@@ -16,9 +16,14 @@ from scitrace.agents import (
     build_scitrace_agent,
     initial_scitrace_state,
 )
+from scitrace.application import ResourceAdmissionService
+from scitrace.models import PaperResource
+from scitrace.models.discovery import SearchObservation
 from scitrace.services import ResourceService
 from tests.agents.fake_discovery_tools import (
     DiscoveryToolRecorder,
+    FakeResourceVerifier,
+    InMemoryAdmissionRepository,
     build_fake_discovery_tools,
 )
 from tests.agents.fakes import (
@@ -44,14 +49,14 @@ from tests.agents.fakes import (
             'Find the paper "ZIPIT! Merging Models from Different Tasks without Training".',
             [],
             {"paper"},
-            {"search_papers", "verify_resource"},
+            {"search_papers"},
         ),
         (
             "paper_and_repository",
             "Find both required resources for ZIPIT: (1) the paper and (2) its repository.",
             [],
             {"paper", "repository"},
-            {"search_papers", "search_repositories", "verify_resource"},
+            {"search_papers", "search_repositories"},
         ),
         (
             "repository_with_existing_paper",
@@ -64,11 +69,33 @@ from tests.agents.fakes import (
                 }
             ],
             {"repository"},
-            {"search_repositories", "verify_resource"},
+            {"search_repositories"},
+        ),
+        (
+            "dataset_only",
+            "Find the CIFAR-10 dataset resource.",
+            [],
+            {"dataset"},
+            {"search_datasets"},
+        ),
+        (
+            "model_only",
+            "Find the ZIPIT model checkpoint resource.",
+            [],
+            {"model"},
+            {"search_models"},
+        ),
+        (
+            "all_four_resource_types",
+            "Find all four requested resources for this task: the ZIPIT paper, its repository, "
+            "the CIFAR-10 dataset, and the ZIPIT model checkpoint.",
+            [],
+            {"paper", "repository", "dataset", "model"},
+            {"search_papers", "search_repositories", "search_datasets", "search_models"},
         ),
     ],
 )
-def test_real_discovery_agent_v2_autonomously_searches(
+def test_real_discovery_agent_v1_autonomously_searches(
     case_name: str,
     delegated_request: str,
     confirmed: list[dict[str, str]],
@@ -79,6 +106,12 @@ def test_real_discovery_agent_v2_autonomously_searches(
     _require_real_glm()
     recorder = DiscoveryToolRecorder()
     resource_service = ResourceService()
+    verifier = FakeResourceVerifier()
+    admission = ResourceAdmissionService(
+        resource_service=resource_service,
+        verifier=verifier,
+        repository=InMemoryAdmissionRepository(resource_service),
+    )
     agent = build_discovery_agent(
         model=build_glm_model(),
         discovery_tools=build_fake_discovery_tools(recorder),
@@ -93,20 +126,67 @@ def test_real_discovery_agent_v2_autonomously_searches(
     started_at = time.perf_counter()
     result = agent.invoke({"messages": [HumanMessage(content=instruction)]})
     latency_seconds = time.perf_counter() - started_at
-    discovery_result = result["structured_response"]
+    selection = result["structured_response"]
+    observations = [
+        SearchObservation.model_validate_json(str(message.content))
+        for message in result["messages"]
+        if isinstance(message, ToolMessage) and (message.name or "").startswith("search_")
+    ]
+    observed_new = [
+        candidate
+        for observation in observations
+        for candidate in observation.new_candidates
+    ]
+    observed_existing_ids = {
+        match.resource.id
+        for observation in observations
+        for match in observation.existing_resources
+    }
+    parent_resources = (
+        [
+            PaperResource(
+                id="paper-zipit",
+                name="ZIPIT! Merging Models from Different Tasks without Training",
+                arxiv_id="2305.03053",
+            )
+        ]
+        if confirmed
+        else []
+    )
+    discovery_result = admission.admit(
+        selection,
+        parent_resources=parent_resources,
+        observed_new_candidates=observed_new,
+        observed_existing_resource_ids=observed_existing_ids,
+    )
     returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
     returned_ids = {resource.id for resource in discovery_result.discovered_resources}
-    supported_ids = {
-        call["result"]["verified_resource"]["id"]
-        for call in recorder.calls
-        if call["tool"] == "verify_resource"
-    }
+    supported_ids = {resource.id for resource in discovery_result.discovered_resources}
     tool_counts = Counter(call["tool"] for call in recorder.calls)
+    tool_calls_per_round = [
+        len(message.tool_calls)
+        for message in result["messages"]
+        if isinstance(message, AIMessage) and message.tool_calls
+    ]
+    search_call_ids = {
+        call["id"]
+        for message in result["messages"]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call["name"].startswith("search_")
+    }
+    search_result_ids = {
+        message.tool_call_id
+        for message in result["messages"]
+        if isinstance(message, ToolMessage) and (message.name or "").startswith("search_")
+    }
     trace = {
         "case": case_name,
         "tool_calls": recorder.calls,
         "tool_call_count": dict(tool_counts),
         "repeated_tool_call_count": sum(max(0, count - 1) for count in tool_counts.values()),
+        "tool_calls_per_round": tool_calls_per_round,
+        "max_parallel_tool_calls": max(tool_calls_per_round, default=0),
         "returned_resource_types": sorted(returned_kinds),
         "duplicate_existing_resources": sorted(
             returned_ids & {resource["id"] for resource in confirmed}
@@ -119,6 +199,7 @@ def test_real_discovery_agent_v2_autonomously_searches(
 
     assert returned_kinds == expected_kinds
     assert required_tools <= set(tool_counts)
+    assert search_result_ids == search_call_ids
     assert trace["duplicate_existing_resources"] == []
     assert trace["hallucinated_resources"] == []
 
@@ -278,13 +359,18 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
     _require_real_glm()
     recorder = DiscoveryToolRecorder()
     resource_service = ResourceService()
+    admission = ResourceAdmissionService(
+        resource_service=resource_service,
+        verifier=FakeResourceVerifier(),
+        repository=InMemoryAdmissionRepository(resource_service),
+    )
     discovery_agent = build_discovery_agent(
         model=build_glm_model(),
         discovery_tools=build_fake_discovery_tools(recorder),
         resource_service=resource_service,
         context_schema=StubWorld,
     )
-    discovery_tool = build_discovery_agent_tool(discovery_agent, resource_service)
+    discovery_tool = build_discovery_agent_tool(discovery_agent, admission)
     agent = build_scitrace_agent(
         model=build_glm_model(),
         specialist_tools=[discovery_tool, analysis_agent_tool, execution_agent_tool],
@@ -316,8 +402,9 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
     assert "search_papers" in tool_names
     assert "search_repositories" in tool_names
     supported_ids = {
-        call["result"]["verified_resource"]["id"]
-        for call in recorder.calls
-        if call["tool"] == "verify_resource"
+        "paper-zipit",
+        "repository-zipit",
+        "dataset-cifar10",
+        "model-zipit-checkpoint",
     }
     assert {resource.id for resource in result["resources"]} <= supported_ids

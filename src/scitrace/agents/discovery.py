@@ -14,41 +14,30 @@ from langgraph.types import Command
 
 from scitrace.agents.middleware import ResourceDeduplicationMiddleware
 from scitrace.agents.state import SciTraceState
+from scitrace.application import ResourceAdmissionService
 from scitrace.models import ResearchResource
-from scitrace.models.agent_results import DiscoveryResult
+from scitrace.models.discovery import DiscoverySelection, SearchObservation
 from scitrace.services import ResourceService
 
 DISCOVERY_SYSTEM_PROMPT = """You are the Discovery specialist in a scientific reproduction system.
 
-Your responsibility is to find scientific resources, resolve their canonical identity when
-necessary, and verify their truth, provenance, and resource-level usability when necessary.
+Your responsibility is to search for the scientific resources explicitly requested by the
+delegation. You can search four resource categories: papers, repositories, datasets, and models.
 
 Use the available resource discovery tools to find the resources needed for the request. Decide
 which tools to use, what to search for, whether additional searches are necessary, and when enough
 information has been collected.
 
 Search results are candidates, not confirmed ResearchResources. The system automatically classifies
-Search and Resolve observations as new_candidates, existing_resources, or ambiguous_candidates.
-Use Resolve when identity evidence is insufficient and Verify when truth, provenance, or usability
-needs confirmation. You decide which tools to call, in what order, and whether another query is
-useful. Do not assume a fixed Search, Resolve, Verify sequence.
+every search observation as new_candidates, existing_resources, or ambiguous_candidates. You decide
+which Search Tools to call, whether independent searches can be called together, how to revise a
+query, which NEW candidates to select, which EXISTING resources to reuse, which AMBIGUOUS candidates
+to abandon, and when the delegated search is complete. Do not select AMBIGUOUS candidates.
 
-new_candidates and ambiguous_candidates are not eligible for DiscoveryResult. Before returning a
-new resource, call verify_resource and use the verified_resource returned by that tool without
-inventing or changing its ID. An existing_resources item is already globally confirmed and may be
-reused without verification when it is not already in the parent-confirmed list. Account for each
-resource category explicitly requested by the delegation; doing so is request fulfillment, not a
-judgment that the overall resource set is sufficient for reproduction.
-
-Do not submit the structured DiscoveryResult while an explicitly requested category that is absent
-from the parent-confirmed list has neither a verified_resource nor an existing_resources match. If
-verify_resource returns a matching verified_resource, include that exact resource in
-discovered_resources; do not discard it or replace its ID.
-
-Return only resources newly confirmed for this task during this invocation. They may be newly
-verified resources or globally existing resources reused for this task, but must not include
-resources already present in the parent-confirmed list. Keep ResourceSummary exactly consistent
-with discovered_resources.
+Return a DiscoverySelection containing selected NEW candidate objects exactly as observed and IDs
+of selected EXISTING resources. Do not include resources already present in the parent-confirmed
+list. Verification, final deduplication, and persistence happen deterministically after your Agent
+Loop and are not tools available to you.
 
 Do not analyze scientific methodology, design experiments, construct experiment specifications,
 execute commands, or determine whether scientific reproduction succeeded.
@@ -87,7 +76,7 @@ def build_discovery_agent(
         tools=list(discovery_tools),
         middleware=[ResourceDeduplicationMiddleware(resource_service)],
         system_prompt=DISCOVERY_SYSTEM_PROMPT,
-        response_format=ToolStrategy(DiscoveryResult),
+        response_format=ToolStrategy(DiscoverySelection),
         context_schema=context_schema,
         name="discovery_agent",
     )
@@ -104,7 +93,7 @@ def _merge_resources(
 
 def build_discovery_agent_tool(
     discovery_agent: DiscoveryAgent,
-    resource_service: ResourceService,
+    admission_service: ResourceAdmissionService,
 ) -> BaseTool:
     """把真实 DiscoveryAgent 包装为可更新 SciTraceState 的 Tool。"""
 
@@ -122,7 +111,6 @@ def build_discovery_agent_tool(
         attempt succeeded.
         """
         parent = runtime.state
-        resource_service.register_existing(parent["resources"])
         confirmed = [
             {"id": resource.id, "kind": resource.kind, "name": resource.name}
             for resource in parent["resources"]
@@ -136,26 +124,33 @@ def build_discovery_agent_tool(
             {"messages": [HumanMessage(content=instruction)]},
             context=runtime.context,
         )
-        result = child_result.get("structured_response")  # 取结构化结果
-        if not isinstance(result, DiscoveryResult):
-            raise RuntimeError("DiscoveryAgent 未返回合法的 DiscoveryResult")
-
-        parent_ids = {resource.id for resource in parent["resources"]}
-        discovered = [
-            resource
-            for resource in result.discovered_resources
-            if resource.id not in parent_ids
-        ]
+        selection = child_result.get("structured_response")  # 取 Agent 的候选选择
+        if not isinstance(selection, DiscoverySelection):
+            raise RuntimeError("DiscoveryAgent 未返回合法的 DiscoverySelection")
+        observed_new_candidates: list[dict[str, Any]] = []
+        observed_existing_resource_ids: set[str] = set()
+        for message in child_result.get("messages", []):
+            if not isinstance(message, ToolMessage) or not (message.name or "").startswith("search_"):
+                continue
+            try:
+                observation = SearchObservation.model_validate_json(str(message.content))
+            except ValueError:
+                continue
+            observed_new_candidates.extend(observation.new_candidates)
+            observed_existing_resource_ids.update(
+                match.resource.id for match in observation.existing_resources
+            )
+        result = admission_service.admit(
+            selection,
+            parent_resources=parent["resources"],
+            observed_new_candidates=observed_new_candidates,
+            observed_existing_resource_ids=observed_existing_resource_ids,
+        )
+        discovered = result.discovered_resources
         current_resources = _merge_resources(parent["resources"], discovered)
-        counts = {
-            "paper_count": sum(resource.kind == "paper" for resource in discovered),
-            "repository_count": sum(resource.kind == "repository" for resource in discovered),
-            "dataset_count": sum(resource.kind == "dataset" for resource in discovered),
-            "model_count": sum(resource.kind == "model" for resource in discovered),
-        }
         observation = {
             "action": "discovery_result",
-            "summary": counts,
+            "summary": result.summary.model_dump(mode="json"),
         }
         return Command(
             update={

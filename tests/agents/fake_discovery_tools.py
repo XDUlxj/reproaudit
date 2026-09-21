@@ -1,4 +1,4 @@
-"""DiscoveryAgent V1 测试使用的 deterministic Search/Resolve/Verify Tools。"""
+"""DiscoveryAgent V1 测试使用的 deterministic 四类 Search Tool 与 Admission Fake。"""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -6,12 +6,20 @@ from typing import Any
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
-from scitrace.models import PaperResource, RepositoryResource, WebLocation
+from scitrace.models import (
+    DatasetResource,
+    ModelResource,
+    PaperResource,
+    RepositoryResource,
+    ResearchResource,
+    WebLocation,
+)
+from scitrace.services import ResourceService
 
 
 @dataclass
 class DiscoveryToolRecorder:
-    """记录 DiscoveryAgent 内部每一次工具调用及固定外部事实。"""
+    """记录 DiscoveryAgent 内部每一次 Search Tool 调用及固定外部事实。"""
 
     calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -19,14 +27,95 @@ class DiscoveryToolRecorder:
         self.calls.append({"tool": tool_name, "args": args, "result": result})
 
 
+class FakeResourceVerifier:
+    """Admission 使用的确定性 Verifier；不作为 LLM Tool 暴露。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def verify(self, candidate: dict[str, Any]) -> ResearchResource | None:
+        self.calls.append(candidate)
+        kind = candidate.get("kind")
+        if candidate.get("verification_should_fail"):
+            return None
+        if kind == "paper":
+            return PaperResource(
+                id="paper-zipit",
+                name=str(candidate.get("title", "ZIPIT Paper")),
+                doi=candidate.get("doi"),
+                arxiv_id=candidate.get("arxiv_id"),
+                locations=[WebLocation(url=str(candidate["url"]))],
+                metadata={"source": "fake-paper-provider"},
+            )
+        if kind == "repository":
+            return RepositoryResource(
+                id="repository-zipit",
+                name=f"{candidate['owner']}/{candidate['name']}",
+                revision="fake-tested-revision",
+                locations=[WebLocation(url=str(candidate["url"]).removesuffix(".git"))],
+                metadata={
+                    "provider": candidate["provider"],
+                    "owner": candidate["owner"],
+                },
+            )
+        if kind == "dataset":
+            return DatasetResource(
+                id="dataset-cifar10",
+                name="CIFAR-10",
+                version=str(candidate["version"]),
+                locations=[WebLocation(url=str(candidate["url"]))],
+                metadata={
+                    "provider": candidate["provider"],
+                    "dataset_id": candidate["dataset_id"],
+                },
+            )
+        if kind == "model":
+            return ModelResource(
+                id="model-zipit-checkpoint",
+                name="ZIPIT checkpoint",
+                revision=str(candidate["revision"]),
+                locations=[WebLocation(url=str(candidate["url"]))],
+                metadata={
+                    "provider": candidate["provider"],
+                    "model_id": candidate["model_id"],
+                },
+            )
+        return None
+
+
+class InMemoryAdmissionRepository:
+    """模拟 Persistence 的原子最终去重与写入。"""
+
+    def __init__(self, resource_service: ResourceService) -> None:
+        self._resource_service = resource_service
+        self.persist_count = 0
+
+    def admit_verified(self, resource: ResearchResource) -> ResearchResource:
+        candidate = resource.model_dump(mode="json")
+        candidate.update(resource.metadata)
+        if resource.kind == "repository" and resource.locations:
+            location = resource.locations[0]
+            if location.kind == "web":
+                candidate["url"] = location.url
+        final = self._resource_service.deduplicate(candidate)
+        if final.status == "existing":
+            assert final.existing_resource is not None
+            return final.existing_resource
+        if final.status == "ambiguous":
+            raise ValueError("Persistence 不接受身份不明确的 Resource")
+        self.persist_count += 1
+        self._resource_service.register_existing([resource])
+        return resource
+
+
 def build_fake_discovery_tools(
     recorder: DiscoveryToolRecorder,
 ) -> tuple[BaseTool, ...]:
-    """构造固定外部世界；工具仅返回事实，不提示下一步动作。"""
+    """构造四类固定 Search World；工具只返回 Candidate 事实。"""
 
     @tool("search_papers")
     def search_papers(query: str) -> list[dict[str, Any]]:
-        """Search for paper candidates; results are candidates, not confirmed resources."""
+        """Search for paper candidates by title, author, DOI, arXiv ID, topic, or claim."""
         result = [
             {
                 "kind": "paper",
@@ -42,7 +131,7 @@ def build_fake_discovery_tools(
 
     @tool("search_repositories")
     def search_repositories(query: str) -> list[dict[str, Any]]:
-        """Search for repository candidates; results are candidates, not confirmed resources."""
+        """Search for repository candidates by project, owner, paper, or method name."""
         result = [
             {
                 "kind": "repository",
@@ -50,87 +139,41 @@ def build_fake_discovery_tools(
                 "owner": "ml-research",
                 "name": "zipit",
                 "url": "https://github.com/ml-research/zipit.git",
-                "fork": False,
-                "description": "Code associated with ZIPIT model merging research.",
             }
         ]
         recorder.record("search_repositories", {"query": query}, result)
         return result
 
-    @tool("resolve_resource_identity")
-    def resolve_resource_identity(candidate: dict[str, Any]) -> dict[str, Any]:
-        """Resolve only canonical identity fields for a paper or repository candidate."""
-        kind = candidate.get("kind")
-        if kind == "paper":
-            result = {
-                **candidate,
-                "title": "ZIPIT! Merging Models from Different Tasks without Training",
-                "arxiv_id": "2305.03053",
-                "doi": "10.48550/arXiv.2305.03053",
-                "canonical_url": "https://arxiv.org/abs/2305.03053",
+    @tool("search_datasets")
+    def search_datasets(query: str) -> list[dict[str, Any]]:
+        """Search for dataset candidates by provider, dataset ID, task, or paper."""
+        result = [
+            {
+                "kind": "dataset",
+                "provider": "torchvision",
+                "dataset_id": "cifar10",
+                "version": "1",
+                "name": "CIFAR-10",
+                "url": "https://www.cs.toronto.edu/~kriz/cifar.html",
             }
-        elif kind == "repository":
-            result = {
-                **candidate,
-                "provider": "github.com",
-                "owner": "ml-research",
-                "name": "zipit",
-                "canonical_url": "https://github.com/ml-research/zipit",
-                "revision": "fake-tested-revision",
-            }
-        else:
-            raise ValueError(f"unsupported candidate kind: {kind}")
-        recorder.record("resolve_resource_identity", {"candidate": candidate}, result)
+        ]
+        recorder.record("search_datasets", {"query": query}, result)
         return result
 
-    @tool("verify_resource")
-    def verify_resource(candidate: dict[str, Any]) -> dict[str, Any]:
-        """Verify a candidate and return a Resource eligible for DiscoveryResult.
-
-        The verified_resource is authoritative: preserve its ID and metadata exactly when
-        including it in DiscoveryResult.
-        """
-        kind = candidate.get("kind")
-        if kind == "paper":
-            resource = PaperResource(
-                id="paper-zipit",
-                name="ZIPIT! Merging Models from Different Tasks without Training",
-                arxiv_id="2305.03053",
-                doi="10.48550/arXiv.2305.03053",
-                locations=[WebLocation(url="https://arxiv.org/abs/2305.03053")],
-                metadata={"source": "fake-arxiv", "stub": True},
-            )
-            evidence = {"exists": True, "content_accessible": True}
-        elif kind == "repository":
-            resource = RepositoryResource(
-                id="repository-zipit",
-                name="ml-research/zipit",
-                revision="fake-tested-revision",
-                locations=[WebLocation(url="https://github.com/ml-research/zipit")],
-                metadata={
-                    "source": "fake-github",
-                    "provenance": "unknown",
-                    "stub": True,
-                },
-            )
-            evidence = {
-                "exists": True,
-                "accessible": True,
-                "revision_resolvable": True,
-                "provenance": "unknown",
+    @tool("search_models")
+    def search_models(query: str) -> list[dict[str, Any]]:
+        """Search for model candidates by provider, model ID, task, or paper."""
+        result = [
+            {
+                "kind": "model",
+                "provider": "huggingface.co",
+                "model_id": "ml-research/zipit-checkpoint",
+                "revision": "fake-revision",
+                "name": "ZIPIT checkpoint",
+                "url": "https://huggingface.co/ml-research/zipit-checkpoint",
             }
-        else:
-            raise ValueError(f"unsupported candidate kind: {kind}")
-        result = {
-            "verified_resource": resource.model_dump(mode="json"),
-            "evidence": evidence,
-        }
-        recorder.record("verify_resource", {"candidate": candidate}, result)
+        ]
+        recorder.record("search_models", {"query": query}, result)
         return result
 
-    return (
-        search_papers,
-        search_repositories,
-        resolve_resource_identity,
-        verify_resource,
-    )
+    return search_papers, search_repositories, search_datasets, search_models

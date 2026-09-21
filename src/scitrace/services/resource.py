@@ -47,6 +47,7 @@ def _repository_identity(candidate: dict[str, Any]) -> tuple[str, str, str] | No
 def _resource_candidate(resource: ResearchResource) -> dict[str, Any]:
     """将 ResearchResource 转为 Candidate，供强身份匹配使用。"""
     candidate = resource.model_dump(mode="json")
+    candidate.update(resource.metadata)
     if resource.kind == "repository" and resource.locations:
         location = resource.locations[0]
         if location.kind == "web":
@@ -62,6 +63,9 @@ class ResourceService:
 
     def list_resources(self) -> list[ResearchResource]:
         return list(self._resources.values())
+
+    def get(self, resource_id: str) -> ResearchResource | None:
+        return self._resources.get(resource_id)
 
     def register_existing(self, resources: Iterable[ResearchResource]) -> None:
         """把持久化层或 Parent State 已确认的全局资源加入匹配视图。"""
@@ -83,6 +87,18 @@ class ResourceService:
             repository = _repository_identity(value)
             if repository:
                 identity = ("repository_identity", repository)
+        elif kind == "dataset":
+            provider = _normalized_text(value.get("provider"))
+            dataset_id = _normalized_text(value.get("dataset_id"))
+            version = _normalized_text(value.get("version"))
+            if provider and dataset_id and version:
+                identity = ("dataset_identity", (provider, dataset_id, version))
+        elif kind == "model":
+            provider = _normalized_text(value.get("provider"))
+            model_id = _normalized_text(value.get("model_id"))
+            revision = _normalized_text(value.get("revision"))
+            if provider and model_id and revision:
+                identity = ("model_identity", (provider, model_id, revision))
 
         if identity is None:
             return DeduplicationResult(status="ambiguous", candidate=value)
@@ -96,8 +112,20 @@ class ResourceService:
                 actual = _normalized_doi(known.get("doi"))
             elif matched_by == "arxiv_id":
                 actual = _normalized_text(known.get("arxiv_id"))
-            else:
+            elif matched_by == "repository_identity":
                 actual = _repository_identity(known)
+            elif matched_by == "dataset_identity":
+                actual = (
+                    _normalized_text(known.get("provider")),
+                    _normalized_text(known.get("dataset_id")),
+                    _normalized_text(known.get("version")),
+                )
+            else:
+                actual = (
+                    _normalized_text(known.get("provider")),
+                    _normalized_text(known.get("model_id")),
+                    _normalized_text(known.get("revision")),
+                )
             if actual == expected:
                 return DeduplicationResult(
                     status="existing",

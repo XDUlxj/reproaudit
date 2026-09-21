@@ -3,11 +3,20 @@
 import json
 from typing import Any, cast
 
+import pytest
 from langchain.agents.middleware import ToolCallRequest
 from langchain.messages import ToolMessage
+from pydantic import ValidationError
 
 from scitrace.agents.middleware import ResourceDeduplicationMiddleware
-from scitrace.models import PaperResource, RepositoryResource, WebLocation
+from scitrace.models import (
+    DatasetResource,
+    ModelResource,
+    PaperResource,
+    RepositoryResource,
+    WebLocation,
+)
+from scitrace.models.discovery import DeduplicationResult
 from scitrace.services import ResourceService
 
 
@@ -70,14 +79,14 @@ def test_middleware_classifies_new_existing_and_ambiguous_without_dropping_resul
     ]
 
 
-def test_resolve_result_is_deduplicated_again() -> None:
+def test_repository_search_result_is_deduplicated() -> None:
     existing = RepositoryResource(
         id="repository-existing",
         name="foo/bar",
         locations=[WebLocation(url="https://github.com/foo/bar")],
     )
     middleware = ResourceDeduplicationMiddleware(ResourceService([existing]))
-    resolved = {
+    candidate = {
         "kind": "repository",
         "provider": "github.com",
         "owner": "foo",
@@ -86,8 +95,8 @@ def test_resolve_result_is_deduplicated_again() -> None:
     }
 
     result = middleware.wrap_tool_call(
-        _request("resolve_resource_identity"),
-        lambda _: _tool_message(resolved),
+        _request("search_repositories"),
+        lambda _: _tool_message([candidate]),
     )
 
     assert isinstance(result, ToolMessage)
@@ -95,6 +104,120 @@ def test_resolve_result_is_deduplicated_again() -> None:
     assert observation["new_candidates"] == []
     assert observation["ambiguous_candidates"] == []
     assert observation["existing_resources"][0]["resource"]["id"] == "repository-existing"
+
+
+def test_dataset_and_model_strong_identity_support_new_existing_and_ambiguous() -> None:
+    dataset = DatasetResource(
+        id="dataset-existing",
+        name="Dataset",
+        version="1",
+        metadata={"provider": "provider", "dataset_id": "dataset"},
+    )
+    model = ModelResource(
+        id="model-existing",
+        name="Model",
+        revision="main",
+        metadata={"provider": "provider", "model_id": "model"},
+    )
+    service = ResourceService([dataset, model])
+
+    assert service.deduplicate(
+        {
+            "kind": "dataset",
+            "provider": "PROVIDER",
+            "dataset_id": "dataset",
+            "version": "1",
+        }
+    ).status == "existing"
+    assert service.deduplicate(
+        {
+            "kind": "dataset",
+            "provider": "provider",
+            "dataset_id": "new",
+            "version": "1",
+        }
+    ).status == "new"
+    assert service.deduplicate(
+        {"kind": "dataset", "provider": "provider", "name": "weak"}
+    ).status == "ambiguous"
+    assert service.deduplicate(
+        {
+            "kind": "model",
+            "provider": "provider",
+            "model_id": "model",
+            "revision": "MAIN",
+        }
+    ).status == "existing"
+    assert service.deduplicate(
+        {"kind": "model", "provider": "provider", "model_id": "weak"}
+    ).status == "ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "candidate"),
+    [
+        ("search_papers", {"kind": "paper", "doi": "10.1000/paper"}),
+        (
+            "search_repositories",
+            {
+                "kind": "repository",
+                "provider": "github.com",
+                "owner": "owner",
+                "name": "repo",
+            },
+        ),
+        (
+            "search_datasets",
+            {
+                "kind": "dataset",
+                "provider": "provider",
+                "dataset_id": "dataset",
+                "version": "1",
+            },
+        ),
+        (
+            "search_models",
+            {
+                "kind": "model",
+                "provider": "provider",
+                "model_id": "model",
+                "revision": "main",
+            },
+        ),
+    ],
+)
+def test_middleware_intercepts_all_four_search_tools(
+    tool_name: str,
+    candidate: dict[str, Any],
+) -> None:
+    middleware = ResourceDeduplicationMiddleware(ResourceService())
+
+    result = middleware.wrap_tool_call(
+        _request(tool_name),
+        lambda _: _tool_message([candidate]),
+    )
+
+    assert isinstance(result, ToolMessage)
+    observation = json.loads(str(result.content))
+    assert observation["new_candidates"] == [candidate]
+    assert observation["existing_resources"] == []
+    assert observation["ambiguous_candidates"] == []
+
+
+def test_empty_search_becomes_empty_observation_instead_of_error() -> None:
+    middleware = ResourceDeduplicationMiddleware(ResourceService())
+
+    result = middleware.wrap_tool_call(
+        _request("search_papers"),
+        lambda _: _tool_message([]),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert json.loads(str(result.content)) == {
+        "new_candidates": [],
+        "existing_resources": [],
+        "ambiguous_candidates": [],
+    }
 
 
 def test_parent_resources_can_be_registered_for_automatic_deduplication() -> None:
@@ -117,3 +240,19 @@ def test_parent_resources_can_be_registered_for_automatic_deduplication() -> Non
     assert result.status == "existing"
     assert result.existing_resource is not None
     assert result.existing_resource.id == "paper-parent"
+
+
+def test_deduplication_result_rejects_inconsistent_status_payload() -> None:
+    with pytest.raises(ValidationError):
+        DeduplicationResult(status="existing", candidate={"kind": "paper"})
+    with pytest.raises(ValidationError):
+        DeduplicationResult(
+            status="new",
+            candidate={"kind": "paper", "doi": "10.1000/new"},
+            existing_resource=PaperResource(
+                id="paper-existing",
+                name="Existing",
+                doi="10.1000/existing",
+            ),
+            matched_by="doi",
+        )
