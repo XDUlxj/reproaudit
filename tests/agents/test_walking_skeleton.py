@@ -7,7 +7,7 @@ from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
 from scitrace.agents import initial_scitrace_state
-from scitrace.agents.orchestration import SpecialistRoutingMiddleware
+from scitrace.agents.middleware import SpecialistRoutingMiddleware
 from tests.agents.fakes import (
     SPECIALIST_TOOLS,
     DeterministicSupervisorModel,

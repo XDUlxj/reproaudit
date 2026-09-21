@@ -1,70 +1,20 @@
 """SciTrace Supervisor 的生产编排内核。"""
 
-import json
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain.messages import HumanMessage, SystemMessage
+from langchain.messages import HumanMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
+from scitrace.agents.middleware import (
+    SpecialistRoutingMiddleware,
+    StateContextMiddleware,
+)
 from scitrace.agents.state import SciTraceState
-
-
-class SpecialistRoutingMiddleware(AgentMiddleware):
-    """有明确路由义务时，只暴露并强制调用对应 Specialist tool。"""
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        required = request.state.get("required_specialist")
-        if required is None:
-            return handler(request)
-        expected_name = f"{required}_agent"
-        tools = [candidate for candidate in request.tools if candidate.name == expected_name]
-        if len(tools) != 1:
-            raise RuntimeError(f"找不到 required specialist tool：{expected_name}")
-        return handler(request.override(tools=tools, tool_choice=expected_name))
-
-
-class StateContextMiddleware(AgentMiddleware):
-    """把 Main State 的当前业务事实呈现给 Supervisor，不给出路由建议。"""
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        state = request.state
-        snapshot = {
-            "task_id": state.get("task_id"),
-            "resources": [resource.model_dump(mode="json") for resource in state.get("resources", [])],
-            "experiment_spec": (
-                state["experiment_spec"].model_dump(mode="json")
-                if state.get("experiment_spec") is not None
-                else None
-            ),
-            "experiment_run": (
-                state["experiment_run"].model_dump(mode="json")
-                if state.get("experiment_run") is not None
-                else None
-            ),
-            "required_specialist": state.get("required_specialist"),
-            "final_answer": state.get("final_answer"),
-        }
-        base_prompt = str(request.system_message.content) if request.system_message else ""
-        state_prompt = (
-            f"{base_prompt}\n\nCurrent SciTraceState (authoritative facts, not routing advice):\n"
-            f"{json.dumps(snapshot, ensure_ascii=False)}"
-        )
-        return handler(request.override(system_message=SystemMessage(content=state_prompt)))
-
 
 SCITRACE_SYSTEM_PROMPT = """You are SciTraceAgent, the supervisor of a scientific reproduction system.
 Your goal is to resolve the user's scientific reproduction request by coordinating the available

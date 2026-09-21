@@ -16,6 +16,7 @@ from scitrace.agents import (
     build_scitrace_agent,
     initial_scitrace_state,
 )
+from scitrace.services import ResourceService
 from tests.agents.fake_discovery_tools import (
     DiscoveryToolRecorder,
     build_fake_discovery_tools,
@@ -43,14 +44,14 @@ from tests.agents.fakes import (
             'Find the paper "ZIPIT! Merging Models from Different Tasks without Training".',
             [],
             {"paper"},
-            {"search_papers"},
+            {"search_papers", "verify_resource"},
         ),
         (
             "paper_and_repository",
             "Find both required resources for ZIPIT: (1) the paper and (2) its repository.",
             [],
             {"paper", "repository"},
-            {"search_papers", "search_repositories"},
+            {"search_papers", "search_repositories", "verify_resource"},
         ),
         (
             "repository_with_existing_paper",
@@ -63,7 +64,7 @@ from tests.agents.fakes import (
                 }
             ],
             {"repository"},
-            {"search_repositories"},
+            {"search_repositories", "verify_resource"},
         ),
     ],
 )
@@ -77,9 +78,11 @@ def test_real_discovery_agent_v2_autonomously_searches(
     """V2 只给能力与边界，由真实 DiscoveryAgent 自主选择 Search Tools。"""
     _require_real_glm()
     recorder = DiscoveryToolRecorder()
+    resource_service = ResourceService()
     agent = build_discovery_agent(
         model=build_glm_model(),
         discovery_tools=build_fake_discovery_tools(recorder),
+        resource_service=resource_service,
     )
     instruction = (
         f"Delegated request:\n{delegated_request}\n\n"
@@ -91,12 +94,16 @@ def test_real_discovery_agent_v2_autonomously_searches(
     result = agent.invoke({"messages": [HumanMessage(content=instruction)]})
     latency_seconds = time.perf_counter() - started_at
     discovery_result = result["structured_response"]
-    returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
-    returned_ids = {resource.id for resource in discovery_result.discovered_resources}
+    promoted = [
+        resource_service.promote(resource)
+        for resource in discovery_result.discovered_resources
+    ]
+    returned_kinds = {resource.kind for resource in promoted}
+    returned_ids = {resource.id for resource in promoted}
     supported_ids = {
-        item["id"]
+        call["result"]["verified_resource"]["id"]
         for call in recorder.calls
-        for item in call["result"]
+        if call["tool"] == "verify_resource"
     }
     tool_counts = Counter(call["tool"] for call in recorder.calls)
     trace = {
@@ -274,12 +281,14 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
     """真实 Supervisor 与 DiscoveryAgent 完成自主 Search Agent Loop。"""
     _require_real_glm()
     recorder = DiscoveryToolRecorder()
+    resource_service = ResourceService()
     discovery_agent = build_discovery_agent(
         model=build_glm_model(),
         discovery_tools=build_fake_discovery_tools(recorder),
+        resource_service=resource_service,
         context_schema=StubWorld,
     )
-    discovery_tool = build_discovery_agent_tool(discovery_agent)
+    discovery_tool = build_discovery_agent_tool(discovery_agent, resource_service)
     agent = build_scitrace_agent(
         model=build_glm_model(),
         specialist_tools=[discovery_tool, analysis_agent_tool, execution_agent_tool],
@@ -311,8 +320,8 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
     assert "search_papers" in tool_names
     assert "search_repositories" in tool_names
     supported_ids = {
-        item["id"]
+        call["result"]["verified_resource"]["id"]
         for call in recorder.calls
-        for item in call["result"]
+        if call["tool"] == "verify_resource"
     }
     assert {resource.id for resource in result["resources"]} <= supported_ids
