@@ -32,6 +32,55 @@ from tests.agents.fakes import (
 )
 
 
+class RecordingDiscoveryAgent:
+    """仅在集成测试中记录每次 Discovery 子图的完整输入与输出契约。"""
+
+    def __init__(self, inner: Any, *, tool_names: set[str]) -> None:
+        self.inner = inner
+        self.tool_names = tool_names
+        self.invocations: list[dict[str, Any]] = []
+
+    def invoke(
+        self,
+        input: dict[str, Any],
+        config: dict[str, Any] | None = None,
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
+        result = self.inner.invoke(input, config, context=context)
+        calls_by_id = {
+            call["id"]: {"tool": call["name"], "args": call["args"]}
+            for message in result["messages"]
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+            if call["name"] in self.tool_names
+        }
+        observations = []
+        for message in result["messages"]:
+            if not isinstance(message, ToolMessage) or message.name not in self.tool_names:
+                continue
+            observations.append(
+                {
+                    **calls_by_id.get(message.tool_call_id, {"tool": message.name}),
+                    "tool_call_id": message.tool_call_id,
+                    "search_observation": json.loads(str(message.content)),
+                }
+            )
+        self.invocations.append(
+            {
+                "instruction": input["messages"][0].content,
+                "search_calls": list(calls_by_id.values()),
+                "search_observations": observations,
+                "structured_response": result["structured_response"].model_dump(mode="json"),
+                "observed_existing_resources": {
+                    resource_id: resource.model_dump(mode="json")
+                    for resource_id, resource in result["observed_existing_resources"].items()
+                },
+            }
+        )
+        return result
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     (
@@ -359,13 +408,18 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
         verifier=FakeResourceVerifier(),
         repository=InMemoryResourceRepository(resource_service),
     )
+    discovery_tools = build_fake_discovery_tools(recorder)
     discovery_agent = build_discovery_agent(
         model=build_glm_model(),
-        discovery_tools=build_fake_discovery_tools(recorder),
+        discovery_tools=discovery_tools,
         resource_service=resource_service,
         context_schema=StubWorld,
     )
-    discovery_tool = build_discovery_agent_tool(discovery_agent, admission)
+    recording_discovery_agent = RecordingDiscoveryAgent(
+        discovery_agent,
+        tool_names={tool.name for tool in discovery_tools},
+    )
+    discovery_tool = build_discovery_agent_tool(recording_discovery_agent, admission)
     agent = build_scitrace_agent(
         model=build_glm_model(),
         specialist_tools=[discovery_tool, analysis_agent_tool, execution_agent_tool],
@@ -386,7 +440,13 @@ def test_real_supervisor_and_discovery_agent_complete_nested_tool_loop() -> None
         context=StubWorld(scenario="happy_path"),
     )
 
-    print(json.dumps({"discovery_tool_trace": recorder.calls}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"discovery_invocations": recording_discovery_agent.invocations},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     assert result["resources"]
     assert result["experiment_spec"] is not None
     assert result["experiment_run"] is not None
