@@ -1,6 +1,7 @@
 """Discovery tools 与去重层之间的运行时数据契约，不属于持久化 Entity。"""
 
 import json
+from hashlib import sha256
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -53,13 +54,26 @@ ResourceCandidate = Annotated[
 
 
 def candidate_fingerprint(candidate: ResourceCandidate) -> str:
-    """序列化完整 observation；不得用于科学身份去重。"""
-    return json.dumps(
+    """计算完整 Candidate observation 的稳定 SHA-256 指纹。"""
+    payload = json.dumps(
         candidate.model_dump(mode="json"),
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def candidate_id(candidate: ResourceCandidate) -> str:
+    """生成仅在当前 Discovery invocation 内使用的 opaque observation handle。"""
+    return f"cand_{candidate_fingerprint(candidate)}"
+
+
+class ObservedCandidate(BaseModel):
+    """NEW Candidate 的引用 ID 与 authoritative 原始 payload。"""
+
+    candidate_id: str
+    candidate: ResourceCandidate
 
 
 class ExistingResourceMatch(BaseModel):
@@ -77,7 +91,7 @@ class SearchObservation(BaseModel):
     任何 Candidate 都不会在去重过程中静默消失。
     """
 
-    new_candidates: list[ResourceCandidate] = Field(default_factory=list)
+    new_candidates: list[ObservedCandidate] = Field(default_factory=list)
     existing_resources: list[ExistingResourceMatch] = Field(default_factory=list)
     ambiguous_candidates: list[ResourceCandidate] = Field(default_factory=list)
 
@@ -102,7 +116,9 @@ class DeduplicationResult(BaseModel):
 
 
 class DiscoverySelection(BaseModel):
-    """DiscoveryAgent 在进入确定性 Admission 前选择的候选资源集合。"""
+    """DiscoveryAgent 只通过本轮 observation ID 选择资源。"""
 
-    selected_new_candidates: list[ResourceCandidate] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    selected_new_candidate_ids: list[str] = Field(default_factory=list)
     selected_existing_resource_ids: list[str] = Field(default_factory=list)

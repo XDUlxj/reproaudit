@@ -2,8 +2,14 @@
 
 import pytest
 
-from scitrace.models import PaperResource, ResearchResource, WebLocation
-from scitrace.models.discovery import DiscoverySelection, PaperCandidate, ResourceCandidate
+from scitrace.models import DatasetResource, PaperResource, ResearchResource, WebLocation
+from scitrace.models.discovery import (
+    DatasetCandidate,
+    DiscoverySelection,
+    PaperCandidate,
+    ResourceCandidate,
+    candidate_id,
+)
 from scitrace.services import (
     InvalidDiscoverySelectionError,
     ResourceAdmissionService,
@@ -47,6 +53,10 @@ def _candidate(doi: str | None = "10.1000/new") -> PaperCandidate:
     )
 
 
+def _observed(candidate: ResourceCandidate) -> dict[str, ResourceCandidate]:
+    return {candidate_id(candidate): candidate}
+
+
 def test_existing_resource_is_reused_without_verify_or_persist() -> None:
     existing = PaperResource(id="paper-existing", name="Existing", doi="10.1000/existing")
     verifier = RecordingVerifier(None)
@@ -60,8 +70,8 @@ def test_existing_resource_is_reused_without_verify_or_persist() -> None:
     result = admission.admit(
         DiscoverySelection(selected_existing_resource_ids=[existing.id]),
         parent_resources=[],
-        observed_new_candidates=[],
-        observed_existing_resource_ids={existing.id},
+        observed_new_candidates={},
+        observed_existing_resources={existing.id: existing},
         task_id="task-test",
     )
 
@@ -82,10 +92,10 @@ def test_new_resource_is_mandatorily_verified_and_persisted() -> None:
     )
 
     result = admission.admit(
-        DiscoverySelection(selected_new_candidates=[candidate]),
+        DiscoverySelection(selected_new_candidate_ids=[candidate_id(candidate)]),
         parent_resources=[],
-        observed_new_candidates=[candidate],
-        observed_existing_resource_ids=set(),
+        observed_new_candidates=_observed(candidate),
+        observed_existing_resources={},
         task_id="task-test",
     )
 
@@ -109,10 +119,12 @@ def test_verify_failure_and_ambiguous_candidate_are_not_admitted() -> None:
     )
 
     result = admission.admit(
-        DiscoverySelection(selected_new_candidates=[strong, ambiguous]),
+        DiscoverySelection(
+            selected_new_candidate_ids=[candidate_id(strong), candidate_id(ambiguous)]
+        ),
         parent_resources=[],
-        observed_new_candidates=[strong, ambiguous],
-        observed_existing_resource_ids=set(),
+        observed_new_candidates={**_observed(strong), **_observed(ambiguous)},
+        observed_existing_resources={},
         task_id="task-test",
     )
 
@@ -139,8 +151,8 @@ def test_unobserved_existing_id_is_rejected() -> None:
                 selected_existing_resource_ids=[existing.id],
             ),
             parent_resources=[],
-            observed_new_candidates=[],
-            observed_existing_resource_ids=set(),
+            observed_new_candidates={},
+            observed_existing_resources={},
             task_id="task-test",
         )
 
@@ -159,10 +171,10 @@ def test_unobserved_new_candidate_is_rejected() -> None:
 
     with pytest.raises(InvalidDiscoverySelectionError):
         admission.admit(
-            DiscoverySelection(selected_new_candidates=[invented]),
+            DiscoverySelection(selected_new_candidate_ids=[candidate_id(invented)]),
             parent_resources=[],
-            observed_new_candidates=[],
-            observed_existing_resource_ids=set(),
+            observed_new_candidates={},
+            observed_existing_resources={},
             task_id="task-test",
         )
 
@@ -187,10 +199,10 @@ def test_persistence_final_dedup_may_reuse_concurrently_created_resource() -> No
     )
 
     result = admission.admit(
-        DiscoverySelection(selected_new_candidates=[candidate]),
+        DiscoverySelection(selected_new_candidate_ids=[candidate_id(candidate)]),
         parent_resources=[],
-        observed_new_candidates=[candidate],
-        observed_existing_resource_ids=set(),
+        observed_new_candidates=_observed(candidate),
+        observed_existing_resources={},
         task_id="task-test",
     )
 
@@ -211,14 +223,78 @@ def test_verify_enriched_identity_is_used_for_final_admission() -> None:
     )
 
     admission.admit(
-        DiscoverySelection(selected_new_candidates=[candidate]),
+        DiscoverySelection(selected_new_candidate_ids=[candidate_id(candidate)]),
         parent_resources=[],
-        observed_new_candidates=[candidate],
-        observed_existing_resource_ids=set(),
+        observed_new_candidates=_observed(candidate),
+        observed_existing_resources={},
         task_id="task-test",
     )
 
     assert repository.canonical_keys == ["paper:doi:10.1000/enriched"]
+
+
+def test_candidate_id_selection_preserves_cifar10_location_for_verification() -> None:
+    location = WebLocation(url="https://www.cs.toronto.edu/~kriz/cifar.html")
+    candidate = DatasetCandidate(
+        name="CIFAR-10",
+        provider="torchvision",
+        dataset_id="cifar10",
+        version="1",
+        locations=[location],
+    )
+    verified = DatasetResource(
+        name="CIFAR-10",
+        version="1",
+        locations=[location],
+        metadata={"provider": "torchvision", "dataset_id": "cifar10"},
+    )
+    verifier = RecordingVerifier(verified)
+    repository = RecordingRepository(verified)
+    admission = ResourceAdmissionService(
+        resource_service=ResourceService(), verifier=verifier, repository=repository
+    )
+
+    result = admission.admit(
+        DiscoverySelection(selected_new_candidate_ids=[candidate_id(candidate)]),
+        parent_resources=[],
+        observed_new_candidates=_observed(candidate),
+        observed_existing_resources={},
+        task_id="task-test",
+    )
+
+    assert verifier.calls[0].locations == [location]
+    assert result.discovered_resources == [verified]
+
+
+def test_distinct_observations_of_same_resource_admit_only_once() -> None:
+    first = PaperCandidate(
+        name="Paper via arXiv", doi="10.1000/same", locations=[WebLocation(url="https://a")]
+    )
+    second = PaperCandidate(
+        name="Paper via publisher",
+        doi="10.1000/same",
+        locations=[WebLocation(url="https://b")],
+    )
+    verified = PaperResource(id="paper-same", name="Paper", doi="10.1000/same")
+    verifier = RecordingVerifier(verified)
+    repository = RecordingRepository(verified)
+    admission = ResourceAdmissionService(
+        resource_service=ResourceService(), verifier=verifier, repository=repository
+    )
+
+    result = admission.admit(
+        DiscoverySelection(
+            selected_new_candidate_ids=[candidate_id(first), candidate_id(second)]
+        ),
+        parent_resources=[],
+        observed_new_candidates={**_observed(first), **_observed(second)},
+        observed_existing_resources={},
+        task_id="task-test",
+    )
+
+    assert result.discovered_resources == [verified]
+    assert verifier.calls == [first]
+    assert repository.calls == [verified]
 
 
 def test_parent_resource_is_removed_from_delta_and_summary_is_recomputed() -> None:
@@ -234,8 +310,8 @@ def test_parent_resource_is_removed_from_delta_and_summary_is_recomputed() -> No
     result = admission.admit(
         DiscoverySelection(selected_existing_resource_ids=[parent.id]),
         parent_resources=[parent],
-        observed_new_candidates=[],
-        observed_existing_resource_ids={parent.id},
+        observed_new_candidates={},
+        observed_existing_resources={parent.id: parent},
         task_id="task-test",
     )
 

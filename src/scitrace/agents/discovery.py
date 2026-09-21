@@ -36,16 +36,13 @@ which Search Tools to call, whether independent searches can be called together,
 query, which NEW candidates to select, which EXISTING resources to reuse, which AMBIGUOUS candidates
 to abandon, and when the delegated search is complete. Do not select AMBIGUOUS candidates.
 
-Return a DiscoverySelection containing selected NEW candidate objects exactly as observed and IDs
-of selected EXISTING resources. Your final DiscoverySelection must reference only resources
-actually returned in tool observations during this invocation. For a NEW candidate, copy the
-candidate object exactly as observed. Do not reconstruct, normalize, enrich, summarize, or modify
-it. Copy every field and value, including locations and metadata even when they appear optional or
-empty. For an EXISTING resource, return only an ID that appeared in an existing_resources
-observation. You must use a discovery tool before selecting any NEW candidate; your own knowledge
-is never an observation. Never create a candidate or resource ID from your own knowledge. Do not include resources already
-present in the parent-confirmed list. Verification, final deduplication, and persistence happen
-deterministically after your Agent Loop and are not tools available to you.
+Return a DiscoverySelection containing IDs of selected NEW candidates and EXISTING resources. For
+a NEW candidate, select it only by a candidate_id that appeared
+in a new_candidates observation during this invocation. For an EXISTING resource, select it only by
+a resource ID that appeared in an existing_resources observation during this invocation. Never
+invent candidate IDs or resource IDs. Do not select AMBIGUOUS candidates. Do not include resources
+already present in the parent-confirmed list. Verification, final deduplication, and persistence
+happen deterministically after your Agent Loop and are not tools available to you.
 
 Do not analyze scientific methodology, design experiments, construct experiment specifications,
 execute commands, or determine whether scientific reproduction succeeded.
@@ -126,9 +123,9 @@ def build_discovery_agent_tool(
         """
         parent = runtime.state
         confirmed = [
-            {"id": resource.id, "kind": resource.kind, "name": resource.name}
+            {"kind": resource.kind, "name": resource.name}
             for resource in parent["resources"]
-        ]  # 告知 Agent 当前已经确认的资源
+        ]  # Parent Resource ID 不是本轮 observation handle，不向 Selection 暴露。
         instruction = (
             f"Delegated request:\n{request}\n\n"
             "Resources already confirmed before this invocation:\n"
@@ -142,12 +139,12 @@ def build_discovery_agent_tool(
         if not isinstance(selection, DiscoverySelection):
             raise RuntimeError("DiscoveryAgent 未返回合法的 DiscoverySelection")
         observed_new_candidates = child_result["observed_new_candidates"]
-        observed_existing_resource_ids = child_result["observed_existing_resource_ids"]
+        observed_existing_resources = child_result["observed_existing_resources"]
         result = admission_service.admit(
             selection,
             parent_resources=parent["resources"],
             observed_new_candidates=observed_new_candidates,
-            observed_existing_resource_ids=set(observed_existing_resource_ids),
+            observed_existing_resources=observed_existing_resources,
             task_id=parent["task_id"],
         )
         discovered = result.discovered_resources

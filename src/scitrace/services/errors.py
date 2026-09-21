@@ -7,3 +7,7 @@ class InvalidDiscoverySelectionError(RuntimeError):
 
 class ResourceObservationError(RuntimeError):
     """Candidate-producing Tool 违反了 ResourceCandidate 输出契约。"""
+
+
+class CandidateIdentityCollisionError(RuntimeError):
+    """同一个 observation/resource ID 被映射到了不同 payload。"""

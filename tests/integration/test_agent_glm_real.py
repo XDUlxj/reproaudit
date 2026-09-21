@@ -110,9 +110,11 @@ def test_real_discovery_agent_v1_autonomously_searches(
         verifier=verifier,
         repository=InMemoryResourceRepository(resource_service),
     )
+    discovery_tools = build_fake_discovery_tools(recorder)
+    discovery_tool_names = {tool.name for tool in discovery_tools}
     agent = build_discovery_agent(
         model=build_glm_model(),
-        discovery_tools=build_fake_discovery_tools(recorder),
+        discovery_tools=discovery_tools,
         resource_service=resource_service,
     )
     instruction = (
@@ -126,7 +128,7 @@ def test_real_discovery_agent_v1_autonomously_searches(
     latency_seconds = time.perf_counter() - started_at
     selection = result["structured_response"]
     observed_new = result["observed_new_candidates"]
-    observed_existing_ids = set(result["observed_existing_resource_ids"])
+    observed_existing = result["observed_existing_resources"]
     parent_resources = (
         [
             PaperResource(
@@ -142,12 +144,17 @@ def test_real_discovery_agent_v1_autonomously_searches(
         selection,
         parent_resources=parent_resources,
         observed_new_candidates=observed_new,
-        observed_existing_resource_ids=observed_existing_ids,
+        observed_existing_resources=observed_existing,
         task_id="task-discovery-eval",
     )
     returned_kinds = {resource.kind for resource in discovery_result.discovered_resources}
     returned_ids = {resource.id for resource in discovery_result.discovered_resources}
-    supported_ids = {resource.id for resource in discovery_result.discovered_resources}
+    supported_ids = {
+        "paper-zipit",
+        "repository-zipit",
+        "dataset-cifar10",
+        "model-zipit-checkpoint",
+    }
     tool_counts = Counter(call["tool"] for call in recorder.calls)
     tool_calls_per_round = [
         len(message.tool_calls)
@@ -159,12 +166,12 @@ def test_real_discovery_agent_v1_autonomously_searches(
         for message in result["messages"]
         if isinstance(message, AIMessage)
         for call in message.tool_calls
-        if call["name"].startswith("search_")
+        if call["name"] in discovery_tool_names
     }
     search_result_ids = {
         message.tool_call_id
         for message in result["messages"]
-        if isinstance(message, ToolMessage) and (message.name or "").startswith("search_")
+        if isinstance(message, ToolMessage) and message.name in discovery_tool_names
     }
     trace = {
         "case": case_name,
@@ -184,6 +191,8 @@ def test_real_discovery_agent_v1_autonomously_searches(
     print(json.dumps(trace, ensure_ascii=False, indent=2))
 
     assert returned_kinds == expected_kinds
+    assert set(selection.selected_new_candidate_ids) <= set(observed_new)
+    assert set(selection.selected_existing_resource_ids) <= set(observed_existing)
     assert required_tools <= set(tool_counts)
     assert search_result_ids == search_call_ids
     assert trace["duplicate_existing_resources"] == []

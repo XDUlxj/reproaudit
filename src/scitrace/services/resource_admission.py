@@ -7,7 +7,6 @@ from scitrace.models.agent_results import DiscoveryResult, ResourceSummary
 from scitrace.models.discovery import (
     DiscoverySelection,
     ResourceCandidate,
-    candidate_fingerprint,
 )
 from scitrace.persistence import ResourceRepository
 from scitrace.services.errors import InvalidDiscoverySelectionError
@@ -39,33 +38,28 @@ class ResourceAdmissionService:
         selection: DiscoverySelection,
         *,
         parent_resources: list[ResearchResource],
-        observed_new_candidates: list[ResourceCandidate],
-        observed_existing_resource_ids: set[str],
+        observed_new_candidates: dict[str, ResourceCandidate],
+        observed_existing_resources: dict[str, ResearchResource],
         task_id: str,
     ) -> DiscoveryResult:
         """EXISTING 直接复用；NEW 强制 Verify 后交给 Persistence 原子准入。"""
         self._resource_service.register_existing(parent_resources)
         parent_resource_ids = {resource.id for resource in parent_resources}
         admitted: dict[str, ResearchResource] = {}
-        observed_fingerprints = {
-            candidate_fingerprint(candidate)
-            for candidate in observed_new_candidates
-        }
-
         for resource_id in selection.selected_existing_resource_ids:
-            if resource_id not in observed_existing_resource_ids:
+            resource = observed_existing_resources.get(resource_id)
+            if resource is None:
                 raise InvalidDiscoverySelectionError(
                     f"DiscoverySelection 引用了未观察到的 EXISTING Resource: {resource_id}"
                 )
-            resource = self._resource_service.get(resource_id)
-            if resource is not None and resource.id not in parent_resource_ids:
+            if resource.id not in parent_resource_ids:
                 admitted[resource.id] = resource
 
-        for candidate in selection.selected_new_candidates:
-            fingerprint = candidate_fingerprint(candidate)
-            if fingerprint not in observed_fingerprints:
+        for candidate_id in selection.selected_new_candidate_ids:
+            candidate = observed_new_candidates.get(candidate_id)
+            if candidate is None:
                 raise InvalidDiscoverySelectionError(
-                    "DiscoverySelection 引用了未观察到的 NEW Candidate"
+                    f"DiscoverySelection 引用了未观察到的 NEW Candidate: {candidate_id}"
                 )
             dedup = self._resource_service.deduplicate(candidate)
             if dedup.status == "ambiguous":

@@ -11,8 +11,10 @@ from pydantic import TypeAdapter, ValidationError
 
 from scitrace.models.discovery import (
     ExistingResourceMatch,
+    ObservedCandidate,
     ResourceCandidate,
     SearchObservation,
+    candidate_id,
 )
 from scitrace.services.errors import ResourceObservationError
 from scitrace.services.resource import ResourceService
@@ -51,7 +53,12 @@ class ResourceDeduplicationMiddleware(AgentMiddleware):
         for candidate in candidates:
             dedup = self._resource_service.deduplicate(candidate)
             if dedup.status == "new":
-                observation.new_candidates.append(dedup.candidate)
+                observation.new_candidates.append(
+                    ObservedCandidate(
+                        candidate_id=candidate_id(dedup.candidate),
+                        candidate=dedup.candidate,
+                    )
+                )
             elif dedup.status == "ambiguous":
                 observation.ambiguous_candidates.append(dedup.candidate)
             else:
@@ -69,10 +76,14 @@ class ResourceDeduplicationMiddleware(AgentMiddleware):
         )
         return Command(
             update={
-                "observed_new_candidates": observation.new_candidates,
-                "observed_existing_resource_ids": [
-                    match.resource.id for match in observation.existing_resources
-                ],
+                "observed_new_candidates": {
+                    observed.candidate_id: observed.candidate
+                    for observed in observation.new_candidates
+                },
+                "observed_existing_resources": {
+                    match.resource.id: match.resource
+                    for match in observation.existing_resources
+                },
                 "messages": [message],
             }
         )

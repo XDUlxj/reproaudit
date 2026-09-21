@@ -11,8 +11,8 @@ from langgraph.types import Command
 from pydantic import TypeAdapter, ValidationError
 
 from scitrace.agents.discovery_state import (
-    merge_observed_candidates,
-    merge_resource_ids,
+    merge_observed_candidate_maps,
+    merge_observed_resource_maps,
 )
 from scitrace.agents.middleware import ResourceDeduplicationMiddleware
 from scitrace.models import DatasetResource, ModelResource, PaperResource, WebLocation
@@ -20,12 +20,18 @@ from scitrace.models.discovery import (
     DatasetCandidate,
     DeduplicationResult,
     ModelCandidate,
+    ObservedCandidate,
     PaperCandidate,
     RepositoryCandidate,
     ResourceCandidate,
     SearchObservation,
+    candidate_id,
 )
-from scitrace.services import ResourceObservationError, ResourceService
+from scitrace.services import (
+    CandidateIdentityCollisionError,
+    ResourceObservationError,
+    ResourceService,
+)
 
 
 def _request(tool_name: str = "paper_lookup") -> ToolCallRequest:
@@ -75,16 +81,46 @@ def test_candidate_models_are_discriminated_runtime_dtos() -> None:
         PaperCandidate(name="Paper", doi="10.1/a", unexpected=True)  # type: ignore[call-arg]
 
 
-def test_merge_observed_candidates_uses_fingerprint_not_canonical_identity() -> None:
+def test_candidate_id_is_stable_and_tracks_full_observation() -> None:
     first = PaperCandidate(name="ZipIt!", doi="10.1/same")
     second = PaperCandidate(name="ZIPIT! Merging Models", doi="10.1/same")
 
-    assert merge_observed_candidates([first], [first]) == [first]
-    assert merge_observed_candidates([first], [second]) == [first, second]
+    assert candidate_id(first) == candidate_id(first.model_copy())
+    assert candidate_id(first) != candidate_id(second)
+    assert ResourceService().canonical_key(first) == ResourceService().canonical_key(second)
+    assert candidate_id(first).startswith("cand_")
 
 
-def test_merge_resource_ids_is_stable_union() -> None:
-    assert merge_resource_ids(["R1", "R2"], ["R2", "R3"]) == ["R1", "R2", "R3"]
+def test_observed_candidate_and_id_only_selection_contract() -> None:
+    candidate = PaperCandidate(name="Paper", doi="10.1/a")
+    observed = ObservedCandidate(candidate_id=candidate_id(candidate), candidate=candidate)
+
+    assert observed.candidate == candidate
+    from scitrace.models.discovery import DiscoverySelection
+
+    selection = DiscoverySelection(selected_new_candidate_ids=[observed.candidate_id])
+    assert selection.selected_new_candidate_ids == [observed.candidate_id]
+    with pytest.raises(ValidationError):
+        DiscoverySelection(selected_new_candidates=[candidate])  # type: ignore[call-arg]
+
+
+def test_map_reducers_are_idempotent_and_detect_collisions() -> None:
+    first = PaperCandidate(name="A", doi="10.1/a")
+    changed = PaperCandidate(name="Changed", doi="10.1/a")
+    key = candidate_id(first)
+    assert merge_observed_candidate_maps({key: first}, {key: first}) == {key: first}
+    with pytest.raises(CandidateIdentityCollisionError):
+        merge_observed_candidate_maps({key: first}, {key: changed})
+
+    resource = PaperResource(id="R1", name="Paper", doi="10.1/a")
+    assert merge_observed_resource_maps({resource.id: resource}, {resource.id: resource}) == {
+        resource.id: resource
+    }
+    with pytest.raises(CandidateIdentityCollisionError):
+        merge_observed_resource_maps(
+            {resource.id: resource},
+            {resource.id: resource.model_copy(update={"name": "Changed"})},
+        )
 
 
 def test_parallel_observation_updates_are_merged_by_discovery_state() -> None:
@@ -94,19 +130,25 @@ def test_parallel_observation_updates_are_merged_by_discovery_state() -> None:
     first = PaperCandidate(name="A", doi="10.1/a")
     shared = PaperCandidate(name="B", doi="10.1/b")
     third = PaperCandidate(name="C", doi="10.1/c")
+    first_id, shared_id, third_id = map(candidate_id, (first, shared, third))
+    resource_1 = PaperResource(id="R1", name="R1", doi="10.1/r1")
+    resource_2 = PaperResource(id="R2", name="R2", doi="10.1/r2")
     graph = StateGraph(DiscoveryState)
     graph.add_node(
         "tool_a",
         lambda _: {
-            "observed_new_candidates": [first, shared],
-            "observed_existing_resource_ids": ["R1"],
+            "observed_new_candidates": {first_id: first, shared_id: shared},
+            "observed_existing_resources": {resource_1.id: resource_1},
         },
     )
     graph.add_node(
         "tool_b",
         lambda _: {
-            "observed_new_candidates": [shared, third],
-            "observed_existing_resource_ids": ["R1", "R2"],
+            "observed_new_candidates": {shared_id: shared, third_id: third},
+            "observed_existing_resources": {
+                resource_1.id: resource_1,
+                resource_2.id: resource_2,
+            },
         },
     )
     graph.add_edge(START, "tool_a")
@@ -116,8 +158,12 @@ def test_parallel_observation_updates_are_merged_by_discovery_state() -> None:
 
     result = graph.compile().invoke({"messages": []})
 
-    assert result["observed_new_candidates"] == [first, shared, third]
-    assert result["observed_existing_resource_ids"] == ["R1", "R2"]
+    assert result["observed_new_candidates"] == {
+        first_id: first, shared_id: shared, third_id: third
+    }
+    assert result["observed_existing_resources"] == {
+        resource_1.id: resource_1, resource_2.id: resource_2
+    }
 
 
 def test_middleware_returns_observation_and_records_only_selectable_delta() -> None:
@@ -138,12 +184,16 @@ def test_middleware_returns_observation_and_records_only_selectable_delta() -> N
 
     assert isinstance(result, Command)
     observation = _observation(result)
-    assert observation.new_candidates == [candidates[0]]
+    observed = observation.new_candidates[0]
+    assert observed.candidate_id == candidate_id(candidates[0])
+    assert observed.candidate == candidates[0]
     assert observation.ambiguous_candidates == [candidates[2]]
     assert observation.existing_resources[0].resource.id == existing.id
     assert observation.existing_resources[0].discovered_locations == candidates[1].locations
-    assert result.update["observed_new_candidates"] == [candidates[0]]
-    assert result.update["observed_existing_resource_ids"] == [existing.id]
+    assert result.update["observed_new_candidates"] == {
+        observed.candidate_id: candidates[0]
+    }
+    assert result.update["observed_existing_resources"] == {existing.id: existing}
 
 
 def test_empty_candidate_result_is_valid_empty_observation() -> None:
