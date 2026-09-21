@@ -17,7 +17,6 @@ from scitrace.agents import (
     initial_scitrace_state,
 )
 from scitrace.models import PaperResource
-from scitrace.models.discovery import SearchObservation
 from scitrace.services import ResourceAdmissionService, ResourceService
 from tests.agents.fake_discovery_tools import (
     DiscoveryToolRecorder,
@@ -126,21 +125,8 @@ def test_real_discovery_agent_v1_autonomously_searches(
     result = agent.invoke({"messages": [HumanMessage(content=instruction)]})
     latency_seconds = time.perf_counter() - started_at
     selection = result["structured_response"]
-    observations = [
-        SearchObservation.model_validate_json(str(message.content))
-        for message in result["messages"]
-        if isinstance(message, ToolMessage) and (message.name or "").startswith("search_")
-    ]
-    observed_new = [
-        candidate
-        for observation in observations
-        for candidate in observation.new_candidates
-    ]
-    observed_existing_ids = {
-        match.resource.id
-        for observation in observations
-        for match in observation.existing_resources
-    }
+    observed_new = result["observed_new_candidates"]
+    observed_existing_ids = set(result["observed_existing_resource_ids"])
     parent_resources = (
         [
             PaperResource(

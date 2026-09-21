@@ -12,10 +12,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
+from scitrace.agents.discovery_state import DiscoveryState
 from scitrace.agents.middleware import ResourceDeduplicationMiddleware
 from scitrace.agents.state import SciTraceState
 from scitrace.models import ResearchResource
-from scitrace.models.discovery import DiscoverySelection, SearchObservation
+from scitrace.models.discovery import DiscoverySelection
 from scitrace.services import ResourceAdmissionService, ResourceService
 
 DISCOVERY_SYSTEM_PROMPT = """You are the Discovery specialist in a scientific reproduction system.
@@ -25,7 +26,9 @@ delegation. You can search four resource categories: papers, repositories, datas
 
 Use the available resource discovery tools to find the resources needed for the request. Decide
 which tools to use, what to search for, whether additional searches are necessary, and when enough
-information has been collected.
+information has been collected. Every Discovery invocation must call at least one available
+discovery tool before returning its final DiscoverySelection, including when the final selection is
+empty.
 
 Search results are candidates, not confirmed ResearchResources. The system automatically classifies
 every search observation as new_candidates, existing_resources, or ambiguous_candidates. You decide
@@ -34,9 +37,15 @@ query, which NEW candidates to select, which EXISTING resources to reuse, which 
 to abandon, and when the delegated search is complete. Do not select AMBIGUOUS candidates.
 
 Return a DiscoverySelection containing selected NEW candidate objects exactly as observed and IDs
-of selected EXISTING resources. Do not include resources already present in the parent-confirmed
-list. Verification, final deduplication, and persistence happen deterministically after your Agent
-Loop and are not tools available to you.
+of selected EXISTING resources. Your final DiscoverySelection must reference only resources
+actually returned in tool observations during this invocation. For a NEW candidate, copy the
+candidate object exactly as observed. Do not reconstruct, normalize, enrich, summarize, or modify
+it. Copy every field and value, including locations and metadata even when they appear optional or
+empty. For an EXISTING resource, return only an ID that appeared in an existing_resources
+observation. You must use a discovery tool before selecting any NEW candidate; your own knowledge
+is never an observation. Never create a candidate or resource ID from your own knowledge. Do not include resources already
+present in the parent-confirmed list. Verification, final deduplication, and persistence happen
+deterministically after your Agent Loop and are not tools available to you.
 
 Do not analyze scientific methodology, design experiments, construct experiment specifications,
 execute commands, or determine whether scientific reproduction succeeded.
@@ -44,7 +53,7 @@ execute commands, or determine whether scientific reproduction succeeded.
 Never invent resources or resource metadata that are not supported by tool results. If a search
 returns no useful result, try a meaningfully different query when reasonable. Do not repeat
 effectively identical searches. If reasonable alternatives are exhausted, return an empty
-DiscoveryResult instead of continuing indefinitely.
+DiscoverySelection instead of continuing indefinitely.
 """
 
 
@@ -73,9 +82,15 @@ def build_discovery_agent(
     return create_agent(
         model=model,
         tools=list(discovery_tools),
-        middleware=[ResourceDeduplicationMiddleware(resource_service)],
+        middleware=[
+            ResourceDeduplicationMiddleware(
+                resource_service,
+                tool_names={tool.name for tool in discovery_tools},
+            )
+        ],
         system_prompt=DISCOVERY_SYSTEM_PROMPT,
         response_format=ToolStrategy(DiscoverySelection),
+        state_schema=DiscoveryState,
         context_schema=context_schema,
         name="discovery_agent",
     )
@@ -126,24 +141,13 @@ def build_discovery_agent_tool(
         selection = child_result.get("structured_response")  # 取 Agent 的候选选择
         if not isinstance(selection, DiscoverySelection):
             raise RuntimeError("DiscoveryAgent 未返回合法的 DiscoverySelection")
-        observed_new_candidates: list[dict[str, Any]] = []
-        observed_existing_resource_ids: set[str] = set()
-        for message in child_result.get("messages", []):
-            if not isinstance(message, ToolMessage) or not (message.name or "").startswith("search_"):
-                continue
-            try:
-                observation = SearchObservation.model_validate_json(str(message.content))
-            except ValueError:
-                continue
-            observed_new_candidates.extend(observation.new_candidates)
-            observed_existing_resource_ids.update(
-                match.resource.id for match in observation.existing_resources
-            )
+        observed_new_candidates = child_result["observed_new_candidates"]
+        observed_existing_resource_ids = child_result["observed_existing_resource_ids"]
         result = admission_service.admit(
             selection,
             parent_resources=parent["resources"],
             observed_new_candidates=observed_new_candidates,
-            observed_existing_resource_ids=observed_existing_resource_ids,
+            observed_existing_resource_ids=set(observed_existing_resource_ids),
             task_id=parent["task_id"],
         )
         discovered = result.discovered_resources

@@ -14,6 +14,13 @@ from scitrace.models import (
     ResearchResource,
     WebLocation,
 )
+from scitrace.models.discovery import (
+    DatasetCandidate,
+    ModelCandidate,
+    PaperCandidate,
+    RepositoryCandidate,
+    ResourceCandidate,
+)
 from scitrace.services import ResourceService
 
 
@@ -24,60 +31,65 @@ class DiscoveryToolRecorder:
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     def record(self, tool_name: str, args: dict[str, Any], result: Any) -> None:
-        self.calls.append({"tool": tool_name, "args": args, "result": result})
+        serialized = [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+            for item in result
+        ]
+        self.calls.append({"tool": tool_name, "args": args, "result": serialized})
 
 
 class FakeResourceVerifier:
     """Admission 使用的确定性 Verifier；不作为 LLM Tool 暴露。"""
 
     def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[ResourceCandidate] = []
 
-    def verify(self, candidate: dict[str, Any]) -> ResearchResource | None:
+    def verify(self, candidate: ResourceCandidate) -> ResearchResource | None:
         self.calls.append(candidate)
-        kind = candidate.get("kind")
-        if candidate.get("verification_should_fail"):
+        kind = candidate.kind
+        if candidate.metadata.get("verification_should_fail"):
             return None
         if kind == "paper":
             return PaperResource(
                 id="paper-zipit",
-                name=str(candidate.get("title", "ZIPIT Paper")),
-                doi=candidate.get("doi"),
-                arxiv_id=candidate.get("arxiv_id"),
-                locations=[WebLocation(url=str(candidate["url"]))],
+                name=candidate.name,
+                doi=candidate.doi,
+                arxiv_id=candidate.arxiv_id,
+                locations=candidate.locations,
                 metadata={"source": "fake-paper-provider"},
             )
         if kind == "repository":
             return RepositoryResource(
                 id="repository-zipit",
-                name=f"{candidate['owner']}/{candidate['name']}",
+                name=f"{candidate.owner}/{candidate.repository}",
                 revision="fake-tested-revision",
-                locations=[WebLocation(url=str(candidate["url"]).removesuffix(".git"))],
+                locations=candidate.locations,
                 metadata={
-                    "provider": candidate["provider"],
-                    "owner": candidate["owner"],
+                    "provider": candidate.provider,
+                    "owner": candidate.owner,
+                    "repository": candidate.repository,
                 },
             )
         if kind == "dataset":
             return DatasetResource(
                 id="dataset-cifar10",
                 name="CIFAR-10",
-                version=str(candidate["version"]),
-                locations=[WebLocation(url=str(candidate["url"]))],
+                version=candidate.version,
+                locations=candidate.locations,
                 metadata={
-                    "provider": candidate["provider"],
-                    "dataset_id": candidate["dataset_id"],
+                    "provider": candidate.provider,
+                    "dataset_id": candidate.dataset_id,
                 },
             )
         if kind == "model":
             return ModelResource(
                 id="model-zipit-checkpoint",
                 name="ZIPIT checkpoint",
-                revision=str(candidate["revision"]),
-                locations=[WebLocation(url=str(candidate["url"]))],
+                revision=candidate.revision,
+                locations=candidate.locations,
                 metadata={
-                    "provider": candidate["provider"],
-                    "model_id": candidate["model_id"],
+                    "provider": candidate.provider,
+                    "model_id": candidate.model_id,
                 },
             )
         return None
@@ -94,18 +106,9 @@ class InMemoryResourceRepository:
     def admit_verified(
         self, resource: ResearchResource, *, canonical_key: str
     ) -> ResearchResource:
-        candidate = resource.model_dump(mode="json")
-        candidate.update(resource.metadata)
-        if resource.kind == "repository" and resource.locations:
-            location = resource.locations[0]
-            if location.kind == "web":
-                candidate["url"] = location.url
-        final = self._resource_service.deduplicate(candidate)
-        if final.status == "existing":
-            assert final.existing_resource is not None
-            return final.existing_resource
-        if final.status == "ambiguous":
-            raise ValueError("Persistence 不接受身份不明确的 Resource")
+        for existing in self._resource_service.list_resources():
+            if self._resource_service.canonical_key(existing) == canonical_key:
+                return existing
         self.persist_count += 1
         self._resource_service.register_existing([resource])
         return resource
@@ -123,63 +126,60 @@ def build_fake_discovery_tools(
     def search_papers(query: str) -> list[dict[str, Any]]:
         """Search for paper candidates by title, author, DOI, arXiv ID, topic, or claim."""
         result = [
-            {
-                "kind": "paper",
-                "title": "ZIPIT! Merging Models from Different Tasks without Training",
-                "authors": ["A. Stoica et al."],
-                "arxiv_id": "2305.03053",
-                "doi": "10.48550/arXiv.2305.03053",
-                "url": "https://arxiv.org/abs/2305.03053",
-            }
+            PaperCandidate(
+                name="ZIPIT! Merging Models from Different Tasks without Training",
+                arxiv_id="2305.03053",
+                doi="10.48550/arXiv.2305.03053",
+                locations=[WebLocation(url="https://arxiv.org/abs/2305.03053")],
+                metadata={"authors": ["A. Stoica et al."]},
+            )
         ]
         recorder.record("search_papers", {"query": query}, result)
-        return result
+        return [candidate.model_dump(mode="json") for candidate in result]
 
     @tool("search_repositories")
     def search_repositories(query: str) -> list[dict[str, Any]]:
         """Search for repository candidates by project, owner, paper, or method name."""
         result = [
-            {
-                "kind": "repository",
-                "provider": "github.com",
-                "owner": "ml-research",
-                "name": "zipit",
-                "url": "https://github.com/ml-research/zipit.git",
-            }
+            RepositoryCandidate(
+                name="ml-research/zipit",
+                provider="github.com",
+                owner="ml-research",
+                repository="zipit",
+                locations=[WebLocation(url="https://github.com/ml-research/zipit")],
+            )
         ]
         recorder.record("search_repositories", {"query": query}, result)
-        return result
+        return [candidate.model_dump(mode="json") for candidate in result]
 
     @tool("search_datasets")
     def search_datasets(query: str) -> list[dict[str, Any]]:
         """Search for dataset candidates by provider, dataset ID, task, or paper."""
         result = [
-            {
-                "kind": "dataset",
-                "provider": "torchvision",
-                "dataset_id": "cifar10",
-                "version": "1",
-                "name": "CIFAR-10",
-                "url": "https://www.cs.toronto.edu/~kriz/cifar.html",
-            }
+            DatasetCandidate(
+                name="CIFAR-10",
+                provider="torchvision",
+                dataset_id="cifar10",
+                version="1",
+                locations=[WebLocation(url="https://www.cs.toronto.edu/~kriz/cifar.html")],
+            )
         ]
         recorder.record("search_datasets", {"query": query}, result)
-        return result
+        return [candidate.model_dump(mode="json") for candidate in result]
 
     @tool("search_models")
     def search_models(query: str) -> list[dict[str, Any]]:
         """Search for model candidates by provider, model ID, task, or paper."""
         result = [
-            {
-                "kind": "model",
-                "provider": "huggingface.co",
-                "model_id": "ml-research/zipit-checkpoint",
-                "revision": "fake-revision",
-                "name": "ZIPIT checkpoint",
-                "url": "https://huggingface.co/ml-research/zipit-checkpoint",
-            }
+            ModelCandidate(
+                name="ZIPIT checkpoint",
+                provider="huggingface.co",
+                model_id="ml-research/zipit-checkpoint",
+                revision="fake-revision",
+                locations=[WebLocation(url="https://huggingface.co/ml-research/zipit-checkpoint")],
+            )
         ]
         recorder.record("search_models", {"query": query}, result)
-        return result
+        return [candidate.model_dump(mode="json") for candidate in result]
 
     return search_papers, search_repositories, search_datasets, search_models

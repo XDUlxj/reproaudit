@@ -1,5 +1,14 @@
 """SciTrace V2 的稳定领域模型导出。"""
 
+from scitrace.models.discovery import (
+    DatasetCandidate,
+    DiscoverySelection,
+    ModelCandidate,
+    PaperCandidate,
+    RepositoryCandidate,
+    ResourceCandidate,
+    SearchObservation,
+)
 from scitrace.models.execution import (
     ArtifactOutput,
     CommandRun,
@@ -38,9 +47,11 @@ from scitrace.models.task import Task
 
 __all__ = [
     "ArtifactCriterion", "ArtifactOutput", "ArtifactReference", "AttachmentLocation", "CommandRun",
-    "DatasetResource", "ExperimentRun", "ExperimentSpec", "LocalExecutionHandle",
+    "DatasetCandidate", "DatasetResource", "DiscoverySelection", "ExperimentRun",
+    "ExperimentSpec", "LocalExecutionHandle",
     "ContentLocator", "FileLocator", "LocalLocation", "MetricCriterion", "MetricOutput",
-    "ModelResource", "ObservedOutput", "PaperLocator", "ResourceChunk", "RetrievalHit",
-    "OutputRequirement", "PaperResource", "RepositoryResource", "ResearchResource",
-    "ResourceLocation", "Task", "VerificationCriterion", "WebLocation",
+    "ModelCandidate", "ModelResource", "ObservedOutput", "PaperCandidate", "PaperLocator",
+    "ResourceChunk", "RetrievalHit", "OutputRequirement", "PaperResource",
+    "RepositoryCandidate", "RepositoryResource", "ResearchResource", "ResourceCandidate",
+    "ResourceLocation", "SearchObservation", "Task", "VerificationCriterion", "WebLocation",
 ]

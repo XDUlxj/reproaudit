@@ -1,19 +1,23 @@
 """Discovery Agent 边界外的确定性资源准入流程。"""
 
-import json
-from typing import Any, Protocol
+from typing import Protocol
 
 from scitrace.models import ResearchResource
 from scitrace.models.agent_results import DiscoveryResult, ResourceSummary
-from scitrace.models.discovery import DiscoverySelection
+from scitrace.models.discovery import (
+    DiscoverySelection,
+    ResourceCandidate,
+    candidate_fingerprint,
+)
 from scitrace.persistence import ResourceRepository
+from scitrace.services.errors import InvalidDiscoverySelectionError
 from scitrace.services.resource import ResourceService
 
 
 class ResourceVerifier(Protocol):
     """验证 NEW Candidate；失败时返回 None。"""
 
-    def verify(self, candidate: dict[str, Any]) -> ResearchResource | None: ...
+    def verify(self, candidate: ResourceCandidate) -> ResearchResource | None: ...
 
 
 class ResourceAdmissionService:
@@ -35,7 +39,7 @@ class ResourceAdmissionService:
         selection: DiscoverySelection,
         *,
         parent_resources: list[ResearchResource],
-        observed_new_candidates: list[dict[str, Any]],
+        observed_new_candidates: list[ResourceCandidate],
         observed_existing_resource_ids: set[str],
         task_id: str,
     ) -> DiscoveryResult:
@@ -44,21 +48,25 @@ class ResourceAdmissionService:
         parent_resource_ids = {resource.id for resource in parent_resources}
         admitted: dict[str, ResearchResource] = {}
         observed_fingerprints = {
-            json.dumps(candidate, ensure_ascii=False, sort_keys=True, default=str)
+            candidate_fingerprint(candidate)
             for candidate in observed_new_candidates
         }
 
         for resource_id in selection.selected_existing_resource_ids:
             if resource_id not in observed_existing_resource_ids:
-                continue
+                raise InvalidDiscoverySelectionError(
+                    f"DiscoverySelection 引用了未观察到的 EXISTING Resource: {resource_id}"
+                )
             resource = self._resource_service.get(resource_id)
             if resource is not None and resource.id not in parent_resource_ids:
                 admitted[resource.id] = resource
 
         for candidate in selection.selected_new_candidates:
-            fingerprint = json.dumps(candidate, ensure_ascii=False, sort_keys=True, default=str)
+            fingerprint = candidate_fingerprint(candidate)
             if fingerprint not in observed_fingerprints:
-                continue
+                raise InvalidDiscoverySelectionError(
+                    "DiscoverySelection 引用了未观察到的 NEW Candidate"
+                )
             dedup = self._resource_service.deduplicate(candidate)
             if dedup.status == "ambiguous":
                 continue

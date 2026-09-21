@@ -1,12 +1,11 @@
 """科研资源强身份匹配服务。"""
 
 from collections.abc import Iterable
-from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
 
 from scitrace.models import ResearchResource
-from scitrace.models.discovery import DeduplicationResult
+from scitrace.models.discovery import CandidateBase, DeduplicationResult, ResourceCandidate
 
 
 def _normalized_text(value: Any) -> str | None:
@@ -31,7 +30,7 @@ def _repository_identity(candidate: dict[str, Any]) -> tuple[str, str, str] | No
     """提取仓库身份。"""
     provider = _normalized_text(candidate.get("provider"))
     owner = _normalized_text(candidate.get("owner"))
-    name = _normalized_text(candidate.get("name"))
+    name = _normalized_text(candidate.get("repository") or candidate.get("name"))
     raw_url = candidate.get("canonical_url") or candidate.get("url")
     if isinstance(raw_url, str) and raw_url.strip():
         parsed = urlparse(raw_url.removesuffix(".git"))
@@ -56,11 +55,14 @@ def _resource_candidate(resource: ResearchResource) -> dict[str, Any]:
 
 
 def _canonical_identity(
-    candidate: dict[str, Any] | ResearchResource,
+    candidate: ResourceCandidate | ResearchResource,
 ) -> tuple[str, str] | None:
     """提取规范身份的类型和值；身份不足时返回 ``None``。"""
-    # ResearchResource 是带 discriminator 的 Annotated Union，不能用于 isinstance。
-    value = candidate if isinstance(candidate, dict) else _resource_candidate(candidate)
+    value = (
+        candidate.model_dump(mode="json")
+        if isinstance(candidate, CandidateBase)
+        else _resource_candidate(candidate)
+    )
     kind = value.get("kind")
     if kind == "paper":
         doi = _normalized_doi(value.get("doi"))
@@ -109,7 +111,7 @@ class ResourceService:
         self._resources.update({resource.id: resource for resource in resources})
 
     def canonical_key(
-        self, resource_or_candidate: dict[str, Any] | ResearchResource
+        self, resource_or_candidate: ResourceCandidate | ResearchResource
     ) -> str | None:
         """生成所有去重与持久化流程共用的稳定 canonical key。"""
         identity = _canonical_identity(resource_or_candidate)
@@ -120,15 +122,14 @@ class ResourceService:
             return f"{identity_type}:{value}"
         return f"paper:{identity_type}:{value}"
 
-    def deduplicate(self, candidate: dict[str, Any]) -> DeduplicationResult:
+    def deduplicate(self, candidate: ResourceCandidate) -> DeduplicationResult:
         """只使用确定性强身份匹配，信息不足时返回 ambiguous。"""
-        value = deepcopy(candidate)
-        kind = value.get("kind")
-        canonical_key = self.canonical_key(value)
+        kind = candidate.kind
+        canonical_key = self.canonical_key(candidate)
         if canonical_key is None:
-            return DeduplicationResult(status="ambiguous", candidate=value)
+            return DeduplicationResult(status="ambiguous", candidate=candidate)
 
-        identity = _canonical_identity(value)
+        identity = _canonical_identity(candidate)
         assert identity is not None
         matched_by, _ = identity
         for resource in self._resources.values():
@@ -137,8 +138,8 @@ class ResourceService:
             if self.canonical_key(resource) == canonical_key:
                 return DeduplicationResult(
                     status="existing",
-                    candidate=value,
+                    candidate=candidate,
                     existing_resource=resource,
                     matched_by=matched_by,
                 )
-        return DeduplicationResult(status="new", candidate=value)
+        return DeduplicationResult(status="new", candidate=candidate)
